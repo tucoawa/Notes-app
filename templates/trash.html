@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="parent-bar">
+  <button id="sidebar-open" class="icon-btn" title="Open sidebar (Ctrl+\)">
+    <span class="material-symbols-rounded">menu</span>
+  </button>
+  <span class="parent-bar-spacer"></span>
+  <span class="results-count" id="trash-count">Trash ({{ deleted_notes|length }})</span>
+  
+  {% if deleted_notes %}
+  <button type="button" class="icon-btn danger" id="empty-trash-btn" title="Empty Trash">
+    <span class="material-symbols-rounded">delete_forever</span>
+  </button>
+  {% endif %}
+</div>
+
+<div class="editor-main scroll-pane">
+  <div class="results-toolbar" style="margin-bottom: 16px; gap: 8px;">
+    <div class="search-form">
+      <span class="material-symbols-rounded search-icon">search</span>
+      <input type="text" id="trash-search" placeholder="Search trash…" autocomplete="off" style="max-width: 140px;">
+    </div>
+    
+    <select id="trash-sort" class="sort-select" title="Sort by">
+      <option value="date-desc">Newest</option>
+      <option value="date-asc">Oldest</option>
+      <option value="title-asc">A-Z</option>
+      <option value="title-desc">Z-A</option>
+    </select>
+  </div>
+
+  <div class="settings-page" style="max-width: 720px; padding-top: 0;">
+    {% if not deleted_notes %}
+      <p class="settings-hint" id="trash-empty-msg">Trash is empty.</p>
+    {% else %}
+      <p class="settings-hint" id="trash-no-results" style="display: none;">No matching items in trash.</p>
+      <div class="captures-list" id="trash-list">
+        {% for n in deleted_notes %}
+          <div class="capture-item trash-item" 
+               data-id="{{ n.id }}" 
+               data-title="{{ n.title|lower }}" 
+               data-date="{{ n.deleted_at.isoformat() }}">
+            <span class="cap-name">{{ n.title }}</span>
+            <span class="cap-meta">Deleted {{ n.deleted_at.strftime('%Y-%m-%d') }}</span>
+            <button type="button" class="btn" onclick="restoreNote({{ n.id }})">Restore</button>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+  async function restoreNote(id) {
+    if (!confirm('Restore this note and all its children?')) return;
+    const r = await fetch(`/note/${id}/restore`, { method: 'POST' });
+    if (r.ok) location.reload();
+    else alert('Restore failed.');
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    // --- SEARCH & SORT LOGIC ---
+    const searchInput = document.getElementById('trash-search');
+    const sortSelect = document.getElementById('trash-sort');
+    const list = document.getElementById('trash-list');
+    const noResults = document.getElementById('trash-no-results');
+    const countEl = document.getElementById('trash-count');
+    
+    if (list) {
+      const allItems = Array.from(list.querySelectorAll('.trash-item'));
+
+      function updateList() {
+        const query = searchInput.value.trim().toLowerCase();
+        const sortBy = sortSelect.value;
+
+        const visibleItems = allItems.filter(item => {
+          const title = item.dataset.title;
+          const isMatch = title.includes(query);
+          item.style.display = isMatch ? 'flex' : 'none';
+          return isMatch;
+        });
+
+        visibleItems.sort((a, b) => {
+          if (sortBy.startsWith('title')) {
+            const tA = a.dataset.title;
+            const tB = b.dataset.title;
+            return sortBy === 'title-asc' ? tA.localeCompare(tB) : tB.localeCompare(tA);
+          } else {
+            const dA = a.dataset.date;
+            const dB = b.dataset.date;
+            return sortBy === 'date-asc' ? dA.localeCompare(dB) : dB.localeCompare(dA);
+          }
+        });
+
+        visibleItems.forEach(item => list.appendChild(item));
+
+        noResults.style.display = visibleItems.length === 0 ? 'block' : 'none';
+        countEl.textContent = `Trash (${visibleItems.length})`;
+      }
+
+      searchInput.addEventListener('input', updateList);
+      sortSelect.addEventListener('change', updateList);
+    }
+
+    // --- EMPTY TRASH LOGIC ---
+    const emptyTrashBtn = document.getElementById('empty-trash-btn');
+    if (emptyTrashBtn) {
+      emptyTrashBtn.addEventListener('click', async () => {
+        if (!confirm('Are you absolutely sure you want to permanently delete all notes in the Trash? This cannot be undone.')) {
+          return;
+        }
+        
+        try {
+          const r = await fetch('/trash/empty', { method: 'POST' });
+          const data = await r.json();
+          if (data.ok) {
+            // 1. Instantly hide the list and show the "Trash is empty" message
+            const list = document.getElementById('trash-list');
+            const noResults = document.getElementById('trash-no-results');
+            const emptyMsg = document.getElementById('trash-empty-msg');
+            const countEl = document.getElementById('trash-count');
+            
+            if (list) list.style.display = 'none';
+            if (noResults) noResults.style.display = 'none';
+            if (emptyMsg) emptyMsg.style.display = 'block';
+            if (countEl) countEl.textContent = 'Trash (0)';
+            
+            // 2. Remove the "Empty Trash" button since there's nothing left to delete
+            emptyTrashBtn.style.display = 'none';
+            
+            // 3. Refresh the sidebar in the background (to remove any deleted items)
+            if (typeof window.__refreshTree === 'function') {
+              window.__refreshTree();
+            }
+          } else {
+            alert('Failed to empty trash.');
+          }
+        } catch (err) {
+          alert('Error: ' + err.message);
+        }
+      });
+    }
+  });
+</script>
+
+{% endblock %}

@@ -1,0 +1,1044 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="editor-main scroll-pane" style="display: flex; flex-direction: column; height: 100%;">
+  <!-- The display: flex allows the CSS order property to work on the children. min-width: 0 prevents squishing. -->
+  <div class="settings-page" style="max-width: 800px; min-width: 0; width: 100%; padding-top: 20px; padding-bottom: 80px; display: flex; flex-direction: column;">
+    
+    <!-- 1. Pinned & Recent Notes -->
+    {% if Setting.get('dashboard_show_pinned', '1')|default('1') == '1' and (pinned_notes or recent_notes) %}
+    <div class="dashboard-section" style="margin-bottom: 16px; order: {{ Setting.get('dashboard_order_pinned', '1') }}; width: 100%; box-sizing: border-box;">
+      
+      <div class="tag-cloud-wall">
+        {% for n in pinned_notes %}
+          <a class="tag-chip compact-chip" href="/?note={{ n.id }}" title="{{ n.title }}">
+            <span class="material-symbols-rounded" style="color: var(--accent);">push_pin</span>
+            <span class="tag-val">{{ n.title }}</span>
+          </a>
+        {% endfor %}
+        {% for n in recent_notes %}
+          <a class="tag-chip compact-chip" href="/?note={{ n.id }}" title="{{ n.title }}">
+            <span class="material-symbols-rounded" style="color: var(--text-dim);">history</span>
+            <span class="tag-val">{{ n.title }}</span>
+          </a>
+        {% endfor %}
+      </div>
+
+    </div>
+    {% endif %}
+
+    <!-- 2. Search Embed Dropdown -->
+    {% if Setting.get('dashboard_show_search', '1')|default('1') == '1' %}
+<details class="dashboard-section" {% if Setting.get('dash-sec-1', 'open') == 'open' %}open{% endif %} data-open="{{ 'true' if Setting.get('dash-sec-1', 'open') == 'open' else 'false' }}" style="margin-top: 8px; margin-bottom: 16px; order: {{ Setting.get('dashboard_order_search', '2') }}; width: 100%; box-sizing: border-box;">
+      <summary class="tag-group-head" style="margin-bottom: 12px; cursor: pointer; list-style: none;">
+        <span class="material-symbols-rounded">search</span>
+        <span class="tag-key">Searches</span>
+      </summary>
+      
+      <button type="button" class="settings-select" id="dash-search-btn" style="width: 100%; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; text-align: left; padding: 4px 12px; min-height: 32px; font-size: 13px;">
+        <span>{% if current_search_name %}{{ current_search_name }}{% else %}Select a saved search…{% endif %}</span>
+        <span class="material-symbols-rounded" style="font-size: 18px;">expand_more</span>
+      </button>
+
+      <div class="results-list" style="padding: 0; display: flex; flex-direction: column; width: 100%;">
+        {% if not dashboard_search_id %}
+          <p class="settings-hint">Select a search above to view results.</p>
+        {% elif not search_results %}
+          <p class="settings-hint">No results found for "{{ current_search_name }}".</p>
+        {% else %}
+          <div class="result-group-body" style="width: 100%;">
+            {% for n in search_results %}
+              <a href="/?note={{ n.id }}" class="result-card" style="margin-bottom: 4px; padding: 10px; width: 100%; box-sizing: border-box;">
+                <span class="material-symbols-rounded result-icon">description</span>
+                <div class="result-text" style="min-width: 0;">
+                  <div class="result-title" style="font-size: 14px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                    {{ n.title }}
+                    
+                    {% if n.properties and n.properties.due %}
+                      <span class="prop-chip-tappable"
+                            data-note-id="{{ n.id }}"
+                            data-note-title="{{ n.title }}"
+                            data-kind="due"
+                            data-due="{{ n.properties.due }}"
+                            data-priority="{{ n.properties.priority or '' }}"
+                            data-urgency="{{ n.properties.urgency or '' }}"
+                            style="font-size: 11px; background: var(--bg-input); color: {% if n._is_overdue|default(false) %}var(--danger){% else %}var(--text-dim){% endif %}; padding: 2px 6px; border-radius: 8px; cursor: pointer;">
+                        <span class="chip-label">{{ n.properties.due }}</span>
+                      </span>
+                    {% endif %}                    
+                    
+                    {% if n.properties and n.properties.priority %}
+                      <span class="prop-chip-tappable"
+                            data-note-id="{{ n.id }}"
+                            data-note-title="{{ n.title }}"
+                            data-kind="priority"
+                            data-due="{{ n.properties.due or '' }}"
+                            data-priority="{{ n.properties.priority }}"
+                            data-urgency="{{ n.properties.urgency or '' }}"
+                            style="font-size: 11px; background: var(--bg-input); color: var(--accent); padding: 2px 6px; border-radius: 8px; cursor: pointer;">
+                        <span class="chip-label">P{{ n.properties.priority }}</span>
+                      </span>
+                    {% endif %}
+
+                    {% if n.properties and n.properties.urgency %}
+                      <span class="prop-chip-tappable"
+                            data-note-id="{{ n.id }}"
+                            data-note-title="{{ n.title }}"
+                            data-kind="urgency"
+                            data-due="{{ n.properties.due or '' }}"
+                            data-priority="{{ n.properties.priority or '' }}"
+                            data-urgency="{{ n.properties.urgency }}"
+                            style="font-size: 11px; background: var(--bg-input); color: var(--warn); padding: 2px 6px; border-radius: 8px; cursor: pointer;">
+                        <span class="chip-label">U{{ n.properties.urgency }}</span>
+                      </span>
+                    {% endif %}
+
+                    {# ADD THIS CLOCK ICON #}
+                    {% if n.due_at %}
+                      <span class="result-due" style="margin-left: 4px;" title="{{ n.due_at.strftime('%d/%m/%Y') }}">
+                        <span class="material-symbols-rounded">alarm</span>
+                      </span>
+                    {% endif %}
+                  </div>
+                </div>                
+              </a>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </div>
+      <!-- Custom Search Modal -->
+      <div class="modal" id="dash-search-modal" style="position: fixed; z-index: 9999;">
+        <div class="modal-backdrop" onclick="document.getElementById('dash-search-modal').classList.remove('open')"></div>
+        <div class="modal-sheet" style="max-width: 400px; max-height: 70vh; display: flex; flex-direction: column;">
+          <div class="modal-head">
+            <span>Select a Search</span>
+            <button class="icon-btn" onclick="document.getElementById('dash-search-modal').classList.remove('open')">
+              <span class="material-symbols-rounded">close</span>
+            </button>
+          </div>
+          <div class="modal-body" style="overflow-y: auto; padding: 0;">
+            {% for s in saved_searches %}
+              <button type="button" class="modal-item dash-search-item" data-search-id="{{ s.id }}">
+                <span class="material-symbols-rounded">bookmark</span>
+                <span>{{ s.name }}</span>
+              </button>
+            {% endfor %}
+          </div>
+        </div>
+      </div>      
+    </details>
+    {% endif %}
+
+    <!-- 3. Todo Tasks -->
+    {% if Setting.get('dashboard_show_todo', '1')|default('1') == '1' %}
+<details class="dashboard-section" {% if Setting.get('dash-sec-2', 'open') == 'open' %}open{% endif %} data-open="{{ 'true' if Setting.get('dash-sec-2', 'open') == 'open' else 'false' }}" style="margin-bottom: 24px; order: {{ Setting.get('dashboard_order_todo', '3') }}; width: 100%; box-sizing: border-box;">
+      <summary class="tag-group-head" style="margin-bottom: 12px; cursor: pointer; list-style: none;">
+        <span class="material-symbols-rounded" style="color: var(--danger);">local_fire_department</span>
+        <span class="tag-key">Todo</span>
+        
+        <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;" onclick="event.stopPropagation();">
+          
+          <!-- Reset Button (Only visible in Manual Mode) -->
+          {% if is_manual_sort %}
+          <button type="button" id="reset-todo-order" class="icon-btn small" title="Reset to Priority sort" style="color: var(--danger);">
+            <span class="material-symbols-rounded">restart_alt</span>
+          </button>
+          {% endif %}
+
+          <!-- Manual/Auto Sort Toggle -->
+          <button type="button" id="dash-todo-sort-toggle" class="icon-btn small" title="Toggle Manual Drag & Drop Sorting" 
+                  style="{% if is_manual_sort %}color: var(--accent); background: var(--accent-soft);{% endif %}">
+            <span class="material-symbols-rounded">{% if is_manual_sort %}drag_indicator{% else %}sort{% endif %}</span>
+          </button>
+
+          <select id="dash-priority-select" class="sort-select" style="background: var(--bg-input); border-radius: 6px;">
+            <option value="all" {{ 'selected' if selected_priority == 'all' }}>P*</option>
+            {% for p in available_priorities %}
+              {% if p != 'all' %}
+                <option value="{{ p }}" {{ 'selected' if selected_priority == p }}>P{{ p }}</option>
+              {% endif %}
+            {% endfor %}
+          </select>
+          
+          <select id="dash-urgency-select" class="sort-select" style="background: var(--bg-input); border-radius: 6px;">
+            <option value="all" {{ 'selected' if selected_urgency == 'all' }}>U*</option>
+            {% for u in available_urgencies %}
+              {% if u != 'all' %}
+                <option value="{{ u }}" {{ 'selected' if selected_urgency == u }}>U{{ u }}</option>
+              {% endif %}
+            {% endfor %}
+          </select>
+        </div>
+      </summary>
+      
+      {% if todo_tasks %}
+        <div class="children-list" id="dashboard-todo-list" style="display: flex; flex-direction: column; width: 100%;">
+          {% set ns = namespace(last_prio=None) %}
+          {% for task in todo_tasks %}
+            
+            <!-- Visual Separator between Priorities (Only in Auto Mode) -->
+            {% if ns.last_prio is not none and task._priority_val|default('') != ns.last_prio and request.args.get('priority') == 'all' and request.args.get('todo_sort') != 'manual' %}
+              <div style="border-top: 1px dashed var(--border); margin: 12px 0; position: relative;">
+                <span style="position: absolute; top: -8px; left: 50%; transform: translateX(-50%); background: var(--bg); padding: 0 8px; font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.05em;">P{{ task._priority_val }} Boundary</span>
+              </div>
+            {% endif %}
+            {% set ns.last_prio = task._priority_val|default('') %}
+
+            <a href="/?note={{ task.id }}" class="child-card todo-card" style="width: 100%; box-sizing: border-box; margin-bottom: 2px !important; padding: 10px 12px !important; border-radius: 2px !important;" data-id="{{ task.id }}" data-priority="{{ task._priority_val|default('') }}">
+              
+              {% if is_manual_sort %}
+                <span class="material-symbols-rounded dashboard-drag-handle" style="cursor: grab; color: var(--text-faint); margin-right: 4px;">drag_indicator</span>
+              {% else %}
+                <span class="material-symbols-rounded child-icon" style="color: var(--danger);">check_box_outline_blank</span>
+              {% endif %}
+              
+              <div class="child-text" style="min-width: 0;">
+                <div class="child-title" style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                  {{ task.title }}
+                  
+                  {% if task._priority_val|default('') %}
+                    <span class="prop-chip-tappable priority-badge"
+                          data-note-id="{{ task.id }}"
+                          data-note-title="{{ task.title }}"
+                          data-kind="priority"
+                          data-due="{{ task.properties.due or '' }}"
+                          data-priority="{{ task._priority_val }}"
+                          data-urgency="{{ task._urgency|default('') }}"
+                          style="font-size: 11px; background: var(--bg-input); color: var(--accent); padding: 2px 6px; border-radius: 8px; cursor: pointer;">
+                      <span class="chip-label">P{{ task._priority_val }}</span>
+                    </span>
+                  {% endif %}
+
+                  {% if task._urgency|default('') %}
+                    <span class="prop-chip-tappable urgency-badge"
+                          data-note-id="{{ task.id }}"
+                          data-note-title="{{ task.title }}"
+                          data-kind="urgency"
+                          data-due="{{ task.properties.due or '' }}"
+                          data-priority="{{ task._priority_val|default('') }}"
+                          data-urgency="{{ task._urgency }}"
+                          style="font-size: 11px; background: var(--bg-input); color: var(--warn); padding: 2px 6px; border-radius: 8px; cursor: pointer;">
+                      <span class="chip-label">U{{ task._urgency }}</span>
+                    </span>
+                  {% endif %}
+                </div>
+              </div>
+            </a>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="settings-hint">No tasks pending for this selection. Great job!</p>
+      {% endif %}
+    </details>
+    {% endif %}
+
+    <!-- 4. Today's Journal (Embedded) -->
+{% if Setting.get('dashboard_show_journal', '1')|default('1') == '1' %}
+<details class="dashboard-section" open data-open="true" style="margin-bottom: 24px; order: {{ Setting.get('dashboard_order_journal', '4') }}; width: 100%; box-sizing: border-box;">
+  <summary class="tag-group-head" style="margin-bottom: 12px; cursor: pointer; list-style: none;">
+    <span class="material-symbols-rounded">auto_stories</span>
+    <button type="button" id="dash-embed-title-btn" class="tag-key"
+            style="text-decoration: none; color: inherit; background: transparent; border: 0; text-align: left; padding: 0; font: inherit; cursor: pointer;">
+      {{ today_note.title }}
+    </button>
+
+    <button type="button" class="icon-btn small" id="dash-append-daily-btn" title="Append to this note"
+            onclick="event.stopPropagation();" style="margin-left: auto;">
+      <span class="material-symbols-rounded">add_comment</span>
+    </button>
+    <button type="button" class="icon-btn small" id="dash-attach-daily-btn" title="Attach to this note"
+            onclick="event.stopPropagation();">
+      <span class="material-symbols-rounded">attach_file</span>
+    </button>
+    {% if today_note.id %}
+    <button type="button" class="icon-btn small" id="dash-embed-open-btn" title="Open note"
+            onclick="event.stopPropagation(); location.href='/?note={{ today_note.id }}';">
+      <span class="material-symbols-rounded">open_in_new</span>
+    </button>
+    {% endif %}
+
+    <button type="button" class="icon-btn small" id="dash-calendar-btn" title="Open calendar"
+            onclick="event.stopPropagation();">
+      <span class="material-symbols-rounded">calendar_month</span>
+    </button>
+  </summary>
+
+  <div class="embed" style="margin: 0; padding: 12px 16px;">
+    <div class="embed-label">{{ today_note.title }}</div>
+    <div class="embed-body">
+      {% if today_note.content %}
+        <div class="preview-body" id="today-journal-preview"
+             data-note-id="{{ today_note.id }}"
+             data-note-title="{{ today_note.title }}">
+          {{ today_note.content|markdown|safe }}
+        </div>
+      {% else %}
+        <div class="preview-body" id="today-journal-preview"
+             data-note-id="{{ today_note.id }}"
+             data-note-title="{{ today_note.title }}"></div>
+        <p class="settings-hint" style="margin: 0;">No content yet.</p>
+      {% endif %}
+    </div>
+  </div>
+</details>
+
+<!-- Embedded-note picker modal -->
+<div class="modal" id="dash-embed-picker" style="position: fixed; z-index: 9999;">
+  <div class="modal-backdrop" onclick="document.getElementById('dash-embed-picker').classList.remove('open')"></div>
+  <div class="modal-sheet" style="max-width: 480px; max-height: 70vh; display: flex; flex-direction: column;">
+    <div class="modal-head">
+      <input type="text" id="dash-embed-input" class="qs-input" placeholder="Pick a note to embed…"
+             autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+      <button class="icon-btn" onclick="document.getElementById('dash-embed-picker').classList.remove('open')">
+        <span class="material-symbols-rounded">close</span>
+      </button>
+    </div>
+    <div class="modal-body" id="dash-embed-results" style="overflow-y: auto; padding: 0;"></div>
+  </div>
+</div>
+{% endif %}
+
+  </div>
+</div>
+
+<!-- Bottom Action Bar -->
+<div class="action-bar" id="dashboard-action-bar">
+  <button class="icon-btn" id="dashboard-action-bar-sidebar-toggle" title="Toggle sidebar">
+    <span class="material-symbols-rounded">menu</span>
+  </button>	
+	
+  <button class="icon-btn" id="action-bar-quick-switcher" title="Quick switch">
+    <span class="material-symbols-rounded">search</span>
+  </button>
+
+  <button class="icon-btn" id="add-top-btn" title="New note">
+    <span class="material-symbols-rounded">add</span>
+  </button>
+
+  <button class="icon-btn" id="add-map-btn-dashboard" title="New map note">
+    <span class="material-symbols-rounded">map</span>
+  </button>
+  
+  <button class="icon-btn" id="quick-note-btn" title="Quick Note">
+    <span class="material-symbols-rounded">bolt</span>
+  </button>  
+
+  <button class="icon-btn" id="open-daily-btn" title="Today's note">
+    <span class="material-symbols-rounded">auto_stories</span>
+  </button>
+</div>
+
+<style>
+  /* Hide default browser details marker */
+  details.dashboard-section > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  /* Spread the dashboard action bar buttons */
+  #dashboard-action-bar {
+    display: flex;
+    justify-content: space-around;
+    padding: 1px 16px;
+    overflow: visible;
+  }
+
+  /* Drag Handle Styling */
+  .dashboard-drag-handle {
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+  
+  .dashboard-drag-handle:active {
+    cursor: grabbing;
+  }
+
+  /* Stop long-press menus and text selection on the whole card */
+  .child-card,
+  .child-card * {
+    -webkit-touch-callout: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* Visual style for the card while it's being dragged */
+  .child-card.dragging {
+    background: var(--bg-hover) !important;
+    border-color: var(--accent) !important;
+  }
+
+  /* Force the Todo cards to match the rest of the app */
+  .todo-card {
+    background: var(--bg-alt) !important;
+    border: 1px solid var(--border-soft) !important;
+    border-radius: 2px !important;
+    padding: 10px 12px !important;
+    margin-bottom: 2px !important;
+    box-shadow: none !important;
+    display: flex !important;
+    align-items: flex-start !important;
+    text-decoration: none !important;
+    color: var(--text) !important;
+  }
+  /* Fix the spacing between cards */
+  #dashboard-todo-list {
+    gap: 2px !important;
+  }
+  /* Kill the extra margin from the priority separator */
+  .dashboard-section [style*="border-top: 1px dashed"] {
+    margin: 4px 0 !important;
+  }
+
+  .todo-card:hover {
+    background: var(--bg-hover) !important;
+    border-color: var(--border) !important;
+  }
+</style>
+
+<script>
+  window.DASH_EMBED_NOTE_ID = {{ embedded_note_id|default('null')|tojson }};
+  window.DASH_EMBED_IS_TODAY = {{ 'true' if embedded_is_today else 'false' }};
+</script>
+
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+
+    // 1. Auto-refresh at midnight
+    function reloadAtMidnight() {
+      const now = new Date();
+      const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
+      const msUntilMidnight = midnight.getTime() - now.getTime();
+      setTimeout(() => { window.location.reload(); }, msUntilMidnight);
+    }
+    reloadAtMidnight();
+
+    // ----- Append / Attach to today's note -----
+    const appendDailyBtn = document.getElementById('dash-append-daily-btn');
+    const attachDailyBtn = document.getElementById('dash-attach-daily-btn');
+
+    function formatTimePrefix() {
+      const now = new Date();
+      const p = n => String(n).padStart(2, '0');
+      return `${p(now.getHours())}:${p(now.getMinutes())}\n`; // <--- SINGLE NEWLINE
+    }
+    
+    function openAppendModal() {
+      return new Promise((resolve) => {
+        window.__dashAppendResolve = (v) => {
+          window.__dashAppendResolve = null;
+          resolve(v);
+        };
+        const modal = document.getElementById('dash-append-modal');
+        const input = document.getElementById('dash-append-text');
+        modal.classList.add('open');
+        input.value = '';
+        setTimeout(() => input.focus(), 100);
+
+        const onKey = (e) => {
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            const v = input.value;
+            input.blur();
+            modal.classList.remove('open');
+            if (window.__dashAppendResolve) window.__dashAppendResolve(v);
+            input.removeEventListener('keydown', onKey);
+          }
+        };
+        input.addEventListener('keydown', onKey);
+      });
+    }    
+
+    async function getEmbeddedNote() {
+      if (window.DASH_EMBED_NOTE_ID) {
+        const res = await fetch(`/api/notes/${window.DASH_EMBED_NOTE_ID}`);
+        if (res.ok) return await res.json();
+        window.DASH_EMBED_NOTE_ID = null; // Note was deleted
+      }
+      
+      if (window.DASH_EMBED_IS_TODAY) {
+        const res = await fetch('/api/daily-note/ensure', { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          window.DASH_EMBED_NOTE_ID = data.id;
+          
+          // Update the title text if the note was created on the fly
+          const titleBtn = document.getElementById('dash-embed-title-btn');
+          const embedLabel = document.querySelector('.embed .embed-label');
+          if (titleBtn) titleBtn.textContent = data.title;
+          if (embedLabel) embedLabel.textContent = data.title;
+          
+          return data;
+        }
+      }
+
+      const todayTitle = new Date().toISOString().slice(0, 10);
+      const res = await fetch(`/api/notes/by-title/${encodeURIComponent(todayTitle)}`);
+      if (!res.ok) return null;
+      return await res.json();
+    }
+
+    async function saveNoteContent(note, newContent) {
+      const res = await fetch(`/note/${note.id}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: note.title,
+          content: newContent,
+          properties: note.properties || {},
+          due_at: null,
+          link_ids: [],
+          _client_id: 'dashboard-append',
+          _client_updated_at: note.updated_at || '',
+        }),
+      });
+      return res.ok;
+    }
+
+    function appendToBody(existing, snippet) {
+      let current = existing || '';
+      if (current && !current.endsWith('\n\n')) {
+        if (current.endsWith('\n')) current += '\n';
+        else current += '\n\n';
+      }
+      return current + snippet;
+    }
+
+    async function refreshDashboardPreview(note) {
+      const previewEl = document.getElementById('today-journal-preview');
+      if (!previewEl) return;
+
+      if (!note.content || !note.content.trim()) {
+        previewEl.innerHTML = '';
+        let emptyMsg = document.getElementById('today-journal-empty-msg');
+        if (!emptyMsg) {
+          const p = document.createElement('p');
+          p.id = 'today-journal-empty-msg';
+          p.className = 'settings-hint';
+          p.style.margin = '0';
+          p.textContent = 'No content yet.';
+          previewEl.parentNode.appendChild(p);
+        }
+      } else {
+        let emptyMsg = document.getElementById('today-journal-empty-msg');
+        if (emptyMsg) emptyMsg.remove();
+        
+        let html = '';
+        if (window.marked) {
+          try { html = window.marked.parse(note.content, { breaks: true, gfm: true }); } catch (e) {}
+        }
+        if (!html) {
+          html = '<pre style="white-space: pre-wrap;">' + 
+            note.content.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])) +
+            '</pre>';
+        }
+        previewEl.innerHTML = html;
+      }
+
+      // Ensure the Open button exists
+      let openBtn = document.getElementById('dash-embed-open-btn');
+      if (!openBtn) {
+        const calBtn = document.getElementById('dash-calendar-btn');
+        if (calBtn) {
+          openBtn = document.createElement('button');
+          openBtn.type = 'button';
+          openBtn.className = 'icon-btn small';
+          openBtn.id = 'dash-embed-open-btn';
+          openBtn.title = 'Open note';
+          openBtn.innerHTML = '<span class="material-symbols-rounded">open_in_new</span>';
+          openBtn.setAttribute('onclick', `event.stopPropagation(); location.href='/?note=${note.id}';`);
+          calBtn.parentNode.insertBefore(openBtn, calBtn);
+        }
+      }
+      if (openBtn) {
+        openBtn.style.display = '';
+      }
+    }
+
+    if (appendDailyBtn) {
+      appendDailyBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const text = await openAppendModal();
+        if (text === null) return;
+        const trimmed = text.trim();
+        if (!trimmed) return;
+
+        try {
+          const target = await getEmbeddedNote();
+          if (!target) { alert('Embedded note not found.'); return; }
+
+          // Only prefix with HH:MM when appending to today's journal
+          const isDaily = window.DASH_EMBED_IS_TODAY === true;
+          const snippet = (isDaily ? formatTimePrefix() : '') + trimmed;
+
+          const newContent = appendToBody(target.content || '', snippet);
+          const ok = await saveNoteContent(target, newContent);
+          if (!ok) { alert('Append failed.'); return; }
+          target.content = newContent;
+          await refreshDashboardPreview(target);
+          
+          // Show success toast
+          let toast = document.getElementById('app-toast');
+          if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'app-toast';
+            toast.className = 'app-toast';
+            document.body.appendChild(toast);
+          }
+          toast.textContent = 'Appended to "' + target.title + '"';
+          toast.classList.add('show');
+          clearTimeout(toast._timer);
+          toast._timer = setTimeout(() => toast.classList.remove('show'), 2200);
+        } catch (err) {
+          alert('Failed: ' + err.message);
+        }
+      });
+    }
+
+    if (attachDailyBtn) {
+      attachDailyBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.addEventListener('change', async () => {
+          if (!input.files.length) return;
+          const file = input.files[0];
+          try {
+            const target = await getEmbeddedNote();
+            if (!target) { alert('Embedded note not found.'); return; }
+
+            const fd = new FormData();
+            fd.append('file', file);
+            const upRes = await fetch(`/note/${target.id}/upload`, {
+              method: 'POST',
+              body: fd,
+            });
+            if (!upRes.ok) { alert('Upload failed.'); return; }
+            const upData = await upRes.json();
+            const uploaded = upData.files && upData.files[0];
+            if (!uploaded) { alert('Upload failed.'); return; }
+
+            const isImage = uploaded.is_image;
+            const snippet = isImage
+              ? `![${uploaded.name}](${uploaded.url})`
+              : `[${uploaded.name}](${uploaded.url})`;
+
+            // Only prefix with HH:MM when attaching to today's journal
+            const isDaily = window.DASH_EMBED_IS_TODAY === true;
+            const line = (isDaily ? formatTimePrefix() : '') + snippet;
+
+            const fresh = await getEmbeddedNote();
+            const newContent = appendToBody(fresh.content || '', line + '\n\n');
+            const ok = await saveNoteContent(fresh, newContent);
+            if (!ok) { alert('Save failed.'); return; }
+            fresh.content = newContent;
+            await refreshDashboardPreview(fresh);
+            
+            // Show success toast
+            let toast = document.getElementById('app-toast');
+            if (!toast) {
+              toast = document.createElement('div');
+              toast.id = 'app-toast';
+              document.body.appendChild(toast);
+            }
+            
+            // Apply inline styles to guarantee it shows
+            toast.style.cssText = `
+              position: fixed;
+              bottom: 80px;
+              left: 50%;
+              transform: translateX(-50%) translateY(0);
+              background: var(--bg-elev, #303030);
+              color: var(--text, #ffffff);
+              padding: 10px 16px;
+              border-radius: 8px;
+              border: 1px solid var(--border, #444);
+              box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+              font-size: 14px;
+              z-index: 9999;
+              opacity: 1;
+              transition: opacity 0.2s ease;
+              pointer-events: none;
+            `;
+            
+            toast.textContent = 'Attached to "' + fresh.title + '"';
+            
+            clearTimeout(toast._timer);
+            toast._timer = setTimeout(() => {
+              toast.style.opacity = '0';
+              setTimeout(() => toast.remove(), 200);
+            }, 2200);
+          } catch (err) {
+            alert('Failed: ' + err.message);
+          }
+        });
+        input.click();
+      });
+    }
+
+    // 2. Handle the Dropdown changes
+    document.getElementById('dash-priority-select')?.addEventListener('change', (e) => {
+      const url = new URL(window.location.href);
+      url.searchParams.set('priority', e.target.value);
+      window.location.href = url.toString();
+    });
+
+    document.getElementById('dash-urgency-select')?.addEventListener('change', (e) => {
+      const url = new URL(window.location.href);
+      url.searchParams.set('urgency', e.target.value);
+      window.location.href = url.toString();
+    });
+
+    // Custom Search Modal logic
+    const searchBtn = document.getElementById('dash-search-btn');
+    const searchModal = document.getElementById('dash-search-modal');
+    if (searchBtn && searchModal) {
+      searchBtn.addEventListener('click', () => {
+        searchModal.classList.add('open');
+      });
+
+      searchModal.querySelectorAll('.dash-search-item').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const id = btn.dataset.searchId;
+          const url = new URL(window.location.href);
+          url.searchParams.set('search_id', id);
+          window.location.href = url.toString();
+        });
+      });
+    }
+
+    // 3. Handle the Action Bar buttons
+    document.getElementById('action-bar-quick-switcher')?.addEventListener('click', () => {
+      const btn = document.getElementById('quick-switcher-btn');
+      if (btn) btn.click();
+    });
+
+    document.getElementById('add-top-btn')?.addEventListener('click', () => {
+      if (typeof window.__openNewNoteModal === 'function') {
+        window.__openNewNoteModal(window.ROOT_ID || null);
+      }
+    });
+
+    document.getElementById('add-map-btn-dashboard')?.addEventListener('click', async () => {
+      try {
+        const r = await fetch('/note/new-map', { method: 'POST' });
+        const data = await r.json();
+        if (data.ok && data.url) {
+          localStorage.setItem('sidebar-collapsed', '1');
+          window.instantNavigate?.();
+          location.replace(data.url);
+        }
+      } catch (err) { alert('Failed to create map note: ' + err.message); }
+    });
+
+    document.getElementById('quick-note-btn')?.addEventListener('click', async () => {
+      try {
+        const r = await fetch('/note/quick', { method: 'POST' });
+        const data = await r.json();
+        if (data.ok && data.url) {
+          localStorage.setItem('sidebar-collapsed', '1');
+          window.instantNavigate?.();
+          location.replace(data.url);
+        }
+      } catch (err) { alert('Failed: ' + err.message); }
+    });
+
+    document.getElementById('open-daily-btn')?.addEventListener('click', () => {
+      location.href = '/daily-note?nofocus=1';
+    });
+
+    document.getElementById('dash-calendar-btn')?.addEventListener('click', () => {
+      const sidebarCalBtn = document.getElementById('calendar-btn');
+      if (sidebarCalBtn) sidebarCalBtn.click();
+    });
+
+    // 4. Toggle Manual Sort Mode
+    const sortToggleBtn = document.getElementById('dash-todo-sort-toggle');
+    if (sortToggleBtn) {
+      sortToggleBtn.addEventListener('click', async () => {
+        const url = new URL(window.location.href);
+        const currentMode = "{{ 'manual' if is_manual_sort else 'auto' }}";
+        const newMode = currentMode === 'manual' ? 'auto' : 'manual';
+        try {
+          await fetch('/api/dashboard/save_sort_mode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: newMode })
+          });
+        } catch (e) { console.error('Failed to save sort mode', e); }
+        if (newMode === 'manual') {
+          url.searchParams.set('todo_sort', 'manual');
+        } else {
+          url.searchParams.delete('todo_sort');
+        }
+        window.location.href = url.toString();
+      });
+    }
+
+    // 5. Reset manual order
+    const resetBtn = document.getElementById('reset-todo-order');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', async () => {
+        if (!confirm('Reset manual order back to Priority sort?')) return;
+        await fetch('/api/dashboard/save_todo_order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ order: [] })
+        });
+        window.location.reload();
+      });
+    }
+
+    // 6. Drag and Drop Reordering
+    const list = document.getElementById('dashboard-todo-list');
+    const isManualSort = new URLSearchParams(window.location.search).get('todo_sort') === 'manual';
+
+    if (list && isManualSort) {
+      let draggedItem = null;
+      let ghostEl = null;
+
+      function getDragAfterElement(container, y) {
+        const draggableElements = [...container.querySelectorAll('.child-card:not(.dragging)')];
+        return draggableElements.reduce((closest, child) => {
+          const box = child.getBoundingClientRect();
+          const offset = y - box.top - box.height / 2;
+          if (offset < 0 && offset > closest.offset) {
+            return { offset: offset, element: child };
+          }
+          return closest;
+        }, { offset: Number.NEGATIVE_INFINITY }).element;
+      }
+
+      list.querySelectorAll('.dashboard-drag-handle').forEach(handle => {
+        handle.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+
+        handle.addEventListener('pointerdown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+
+          const card = handle.closest('.child-card');
+          if (!card) return;
+
+          draggedItem = card;
+          draggedItem.classList.add('dragging');
+          draggedItem.style.opacity = '0.5';
+
+          ghostEl = draggedItem.cloneNode(true);
+          ghostEl.style.position = 'fixed';
+          ghostEl.style.pointerEvents = 'none';
+          ghostEl.style.zIndex = '9999';
+          ghostEl.style.width = draggedItem.offsetWidth + 'px';
+          ghostEl.style.opacity = '0.9';
+          ghostEl.style.transform = 'scale(1.02)';
+          ghostEl.style.boxShadow = '0 8px 24px rgba(0,0,0,0.5)';
+          document.body.appendChild(ghostEl);
+
+          const onMove = (ev) => {
+            if (!draggedItem) return;
+            ghostEl.style.left = (ev.clientX - draggedItem.offsetWidth / 2) + 'px';
+            ghostEl.style.top = (ev.clientY - 30) + 'px';
+            const afterElement = getDragAfterElement(list, ev.clientY);
+            if (afterElement == null) {
+              list.appendChild(draggedItem);
+            } else {
+              list.insertBefore(draggedItem, afterElement);
+            }
+          };
+
+          const onUp = () => {
+            if (!draggedItem) return;
+            draggedItem.classList.remove('dragging');
+            draggedItem.style.opacity = '1';
+            if (ghostEl) ghostEl.remove();
+
+            document.removeEventListener('pointermove', onMove);
+            document.removeEventListener('pointerup', onUp);
+            document.removeEventListener('pointercancel', onUp);
+
+            const priorityUpdates = {};
+            const cards = [...list.querySelectorAll('.child-card')];
+            const draggedIndex = cards.indexOf(draggedItem);
+
+            if (draggedIndex > 0) {
+              const aboveCard = cards[draggedIndex - 1];
+              const draggedId = draggedItem.dataset.id;
+              const abovePrio = aboveCard.dataset.priority;
+              const draggedPrio = draggedItem.dataset.priority;
+
+              if (draggedPrio && abovePrio && draggedPrio !== abovePrio) {
+                priorityUpdates[draggedId] = abovePrio;
+                draggedItem.dataset.priority = abovePrio;
+                const badge = draggedItem.querySelector('.priority-badge');
+                if (badge) badge.textContent = 'P' + abovePrio;
+              }
+            }
+
+            const newOrder = cards.map(el => el.dataset.id);
+            fetch('/api/dashboard/save_todo_order', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ order: newOrder, priority_updates: priorityUpdates })
+            });
+
+            draggedItem = null;
+            ghostEl = null;
+          };
+
+          document.addEventListener('pointermove', onMove);
+          document.addEventListener('pointerup', onUp);
+          document.addEventListener('pointercancel', onUp);
+        });
+      });
+    }
+
+    // 7. Remember folded/unfolded state of dashboard sections (Server-side)
+    const sections = document.querySelectorAll('.dashboard-section');
+    sections.forEach((section, index) => {
+      const sectionId = 'dash-sec-' + index;
+      const savedState = section.dataset.open === 'true';
+      if (!savedState) {
+        section.removeAttribute('open');
+      } else {
+        section.setAttribute('open', '');
+      }
+      section.addEventListener('toggle', () => {
+        fetch('/api/dashboard/save_section_state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            section: sectionId,
+            open: section.open
+          })
+        }).catch(err => console.warn('Failed to save section state', err));
+      });
+    });
+
+    // ----- Embedded-note picker -----
+    const embedTitleBtn = document.getElementById('dash-embed-title-btn');
+    const embedModal = document.getElementById('dash-embed-picker');
+    const embedInput = document.getElementById('dash-embed-input');
+    const embedResults = document.getElementById('dash-embed-results');
+
+    if (embedTitleBtn && embedModal && embedInput && embedResults) {
+      let items = [];
+      let idx = -1;
+      let timer = null;
+
+      function esc(s) {
+        return String(s || '').replace(/[&<>"']/g, c => ({
+          '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+        }[c]));
+      }
+
+      function closePicker() {
+        embedModal.classList.remove('open');
+        embedInput.blur();
+        embedResults.innerHTML = '';
+        clearTimeout(timer);
+      }
+
+      async function applyChoice(noteId) {
+        try {
+          const r = await fetch('/api/dashboard/embed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ note_id: noteId })
+          });
+          const data = await r.json();
+          if (!data.ok) {
+            alert(data.error || 'Could not change embedded note.');
+            return;
+          }
+          // Let the server render the new note perfectly
+          window.location.reload();
+        } catch (e) {
+          alert('Failed: ' + e.message);
+        }
+      }
+
+      async function fetchItems(q) {
+        const r = await fetch(`/api/notes?q=${encodeURIComponent(q)}&limit=20`);
+        items = await r.json();
+        idx = window.DASH_EMBED_IS_TODAY ? 0 : -1;
+        render();
+      }
+
+      function render() {
+        let html = '';
+        if (!window.DASH_EMBED_IS_TODAY) {
+          html += `<div class="ac-item${idx === -1 ? ' sel' : ''}" data-reset="1">
+                     Today's journal
+                   </div>`;
+        }
+
+        if (items.length === 0) {
+          html += `<p class="modal-empty">No matching notes.</p>`;
+        } else {
+          html += `<div class="modal-section-label">Notes</div>`;
+          items.forEach((n, i) => {
+            html += `<div class="ac-item${i === idx ? ' sel' : ''}" data-id="${n.id}">${esc(n.title)}</div>`;
+          });
+        }
+
+        embedResults.innerHTML = html;
+
+        embedResults.querySelectorAll('.ac-item').forEach(el => {
+          el.addEventListener('click', () => {
+            if (el.dataset.reset) applyChoice(null);
+            else applyChoice(Number(el.dataset.id));
+          });
+        });
+      }
+
+      function openPicker() {
+        embedModal.classList.add('open');
+        embedInput.value = '';
+        idx = window.DASH_EMBED_IS_TODAY ? 0 : -1;
+        setTimeout(() => {
+          embedInput.focus();
+          fetchItems('');
+        }, 60);
+      }
+
+      embedTitleBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openPicker();
+      });
+
+      embedInput.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fetchItems(embedInput.value.trim()), 80);
+      });
+
+      embedInput.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') {
+          idx = Math.min(idx + 1, items.length - 1);
+          render();
+          e.preventDefault();
+        } else if (e.key === 'ArrowUp') {
+          idx = Math.max(idx - 1, window.DASH_EMBED_IS_TODAY ? 0 : -1);
+          render();
+          e.preventDefault();
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          if (idx === -1) {
+            applyChoice(null);
+          } else if (items[idx]) {
+            applyChoice(items[idx].id);
+          }
+        } else if (e.key === 'Escape') {
+          closePicker();
+        }
+      });
+    }
+  });
+</script>
+
+
+{% endblock %}

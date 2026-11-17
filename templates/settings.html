@@ -1,0 +1,459 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="parent-bar">
+  <button id="sidebar-open" class="icon-btn" title="Open sidebar (Ctrl+\)">
+    <span class="material-symbols-rounded">menu</span>
+  </button>
+  <span class="parent-bar-spacer"></span>
+</div>
+
+<div class="editor-main">
+  <div class="settings-page">
+    <h1 class="settings-title">Settings</h1>
+
+    <form method="post" class="settings-form" id="settings-form">
+    	
+      <div class="settings-section">
+        <label class="settings-label">Outline Layout</label>
+        <p class="settings-hint">
+          Choose how children notes are displayed at the bottom of the note view.
+        </p>
+        <select name="outline_view_mode" class="settings-select">
+          <option value="card" {{ 'selected' if outline_view_mode == 'card' }}>Cards (Modern)</option>
+          <option value="tree" {{ 'selected' if outline_view_mode == 'tree' }}>Tree (Traditional)</option>
+        </select>
+      </div>
+      
+      <div class="settings-section">
+        <label class="settings-label">Tab bar position</label>
+        <p class="settings-hint">
+          Choose whether open note tabs appear at the top of the screen or at the bottom.
+        </p>
+        <select name="tab_bar_position" class="settings-select">
+          <option value="top" {{ 'selected' if tab_bar_position == 'top' }}>Top</option>
+          <option value="bottom" {{ 'selected' if tab_bar_position == 'bottom' }}>Bottom</option>
+        </select>
+      </div>      
+
+      <div class="settings-section">
+        <label class="settings-label">Default template for new notes</label>
+        <p class="settings-hint">
+          When you create a note with <strong>+ → Blank note</strong>, it will be
+          pre-filled from this template. Choose "None" to always start blank.
+        </p>
+        
+        <input type="text" id="default-template-input" class="settings-input" placeholder="Search templates…"
+               autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false"
+               value="{% for t in templates %}{% if default_template_id == t.id|string %}{{ t.title }}{% endif %}{% endfor %}"
+               style="display: {{ 'none' if default_template_id else '' }};">
+        <input type="hidden" name="default_template_id" id="default-template-id" value="{{ default_template_id or '' }}">
+        <div id="default-template-results" class="ac-list"></div>
+        <div id="default-template-chosen" class="ac-chosen" style="display: {{ 'none' if not default_template_id else 'flex' }};">
+          {% for t in templates %}
+            {% if default_template_id == t.id|string %}
+              <span>{{ t.title }}</span>
+              <button type="button" title="Change">×</button>
+            {% endif %}
+          {% endfor %}
+        </div>
+        
+        {% if not templates %}
+          <p class="settings-hint" style="margin-top:6px">
+            No templates yet. Open a note and tap the bookmark icon to make it a template.
+          </p>
+        {% endif %}
+      </div>
+      
+      <div class="settings-section">
+        <label class="settings-label">Task Template</label>
+        <p class="settings-hint">
+          When you tap "Add Subtask" or "Make Subtask", the app will copy the properties and content from this template.
+        </p>
+        
+        <input type="text" id="task-template-input" class="settings-input" placeholder="Search templates…"
+               autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false"
+               value="{% for t in templates %}{% if task_template_id == t.id|string %}{{ t.title }}{% endif %}{% endfor %}"
+               style="display: {{ 'none' if task_template_id else '' }};">
+        <input type="hidden" name="task_template_id" id="task-template-id" value="{{ task_template_id or '' }}">
+        <div id="task-template-results" class="ac-list"></div>
+        <div id="task-template-chosen" class="ac-chosen" style="display: {{ 'none' if not task_template_id else 'flex' }};">
+          {% for t in templates %}
+            {% if task_template_id == t.id|string %}
+              <span>{{ t.title }}</span>
+              <button type="button" title="Change">×</button>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </div> 
+      
+       <div class="settings-section">
+        <label class="settings-label">Daily Note Template</label>
+        <p class="settings-hint">
+          When you open today's note (from the action bar or calendar) and it doesn't exist yet, it will be created from this template.
+        </p>
+        
+        <input type="text" id="daily-note-template-input" class="settings-input" placeholder="Search templates…"
+               autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false"
+               value="{% for t in templates %}{% if daily_note_template_id == t.id|string %}{{ t.title }}{% endif %}{% endfor %}"
+               style="display: {{ 'none' if daily_note_template_id else '' }};">
+        <input type="hidden" name="daily_note_template_id" id="daily-note-template-id" value="{{ daily_note_template_id or '' }}">
+        <div id="daily-note-template-results" class="ac-list"></div>
+        <div id="daily-note-template-chosen" class="ac-chosen" style="display: {{ 'none' if not daily_note_template_id else 'flex' }};">
+          {% for t in templates %}
+            {% if daily_note_template_id == t.id|string %}
+              <span>{{ t.title }}</span>
+              <button type="button" title="Change">×</button>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </div>     
+
+      <div class="settings-section">
+        <label class="settings-label">Image upload resize percentage</label>
+        <p class="settings-hint">
+          When you attach an image, it will be resized to this percentage of
+          its original size. Set to 100 to keep originals. Example: 50 = half
+          width and half height (about 25% file size for photos).
+        </p>
+        <input type="number" name="image_resize_percent" id="image-resize-percent"
+               class="settings-input"
+               value="{{ image_resize_percent or 100 }}"
+               min="10" max="100" step="5">
+      </div>
+      
+      <div class="settings-section">
+        <label class="settings-label">Map defaults</label>
+        <p class="settings-hint">
+          Where new map notes center when location permission isn't granted.
+          Default is Paraty, RJ, Brazil.
+        </p>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+          <label class="settings-label" style="flex: 1 1 140px;">
+            Default latitude
+            <input type="number" step="0.0001" name="map_default_lat"
+                   class="settings-input"
+                   value="{{ map_default_lat or '-23.2208' }}">
+          </label>
+          <label class="settings-label" style="flex: 1 1 140px;">
+            Default longitude
+            <input type="number" step="0.0001" name="map_default_lng"
+                   class="settings-input"
+                   value="{{ map_default_lng or '-44.7136' }}">
+          </label>
+          <label class="settings-label" style="flex: 1 1 100px;">
+            Default zoom
+            <input type="number" min="1" max="19" step="1" name="map_default_zoom"
+                   class="settings-input"
+                   value="{{ map_default_zoom or '13' }}">
+          </label>
+        </div>
+      </div>
+      
+      <div class="settings-section">
+        <label class="settings-label">Journal folder (for "daily note" captures)</label>
+        <p class="settings-hint">
+          The parent note under which daily entries are stored. If left
+          empty, a top-level note called "Journal" will be created
+          automatically when a daily-note capture runs.
+        </p>
+        <select name="journal_parent_id" class="settings-select">
+          <option value="" {{ 'selected' if not journal_parent_id }}>Auto (create "Journal" at Root)</option>
+          {% for n in all_notes|sort(attribute='title') %}
+            <option value="{{ n.id }}" {{ 'selected' if journal_parent_id == n.id|string }}>
+              {{ n.title }}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      
+      <div class="settings-section">
+        <label class="settings-label">Quick Note folder</label>
+        <p class="settings-hint">
+          The folder where notes go when you tap the lightning bolt button in the editor.
+        </p>
+        <select name="quick_note_parent_id" class="settings-select">
+          <option value="" {{ 'selected' if not quick_note_parent_id }}>Root</option>
+          {% for n in all_notes|sort(attribute='title') %}
+            <option value="{{ n.id }}" {{ 'selected' if quick_note_parent_id == n.id|string }}>
+              {{ n.title }}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="settings-section">
+        <label class="settings-label">Map Note folder</label>
+        <p class="settings-hint">
+          The folder where new map notes are created when you tap the map icon in the action bar.
+        </p>
+        <select name="map_note_parent_id" class="settings-select">
+          <option value="" {{ 'selected' if not map_note_parent_id }}>Root</option>
+          {% for n in all_notes|sort(attribute='title') %}
+            <option value="{{ n.id }}" {{ 'selected' if map_note_parent_id == n.id|string }}>
+              {{ n.title }}
+            </option>
+          {% endfor %}
+        </select>
+      </div>   
+
+      <div class="settings-section">
+        <label class="settings-label">Ntfy server / topic</label>
+        <p class="settings-hint">
+          Full URL to your ntfy topic. E.g. <code>http://localhost:8080/Stef</code>
+          or <code>https://ntfy.sh/mytopic</code>. Leave empty to disable
+          notifications.
+        </p>
+        <input type="text" name="ntfy_url" id="ntfy-url"
+               class="settings-input"
+               value="{{ ntfy_url or '' }}"
+               placeholder="http://localhost:8080/Stef"
+               autocapitalize="none" autocorrect="off" spellcheck="false">
+        <div style="margin-top:10px; display:flex; gap:8px; align-items:center">
+          <button type="button" class="btn" id="test-ntfy-btn">Send test notification</button>
+          <span id="ntfy-status" style="font-size:13px; color:var(--text-dim)"></span>
+        </div>
+      </div>
+      
+      <!-- Dashboard Settings -->
+      <div class="settings-section">
+        <label class="settings-label">Dashboard Sections</label>
+        <p class="settings-hint">
+          Choose which sections appear on the dashboard and in what order.
+        </p>
+        
+        <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 12px;">
+          {% for sec_id, sec_name in [('pinned', 'Pinned Notes'), ('search', 'Quick Search'), ('todo', 'Todo'), ('journal', 'Journal')] %}
+            {% set is_shown, order_val = dash_settings[sec_id] %}
+            <div style="display: flex; align-items: center; gap: 16px; background: var(--bg-alt); padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-soft);">
+              
+              <label style="flex: 1; display: flex; align-items: center; gap: 8px; cursor: pointer; margin: 0;">
+                <input type="checkbox" name="dash_show_{{ sec_id }}" value="1" {{ 'checked' if is_shown }} style="width: 18px; height: 18px; accent-color: var(--accent);">
+                <span style="font-size: 15px; font-weight: 500;">{{ sec_name }}</span>
+              </label>
+              
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 13px; color: var(--text-dim);">Order:</span>
+                <select name="dash_order_{{ sec_id }}" class="settings-select" style="min-width: 60px; padding: 4px 8px; height: 32px;">
+                  {% for i in range(1, 5) %}
+                    <option value="{{ i }}" {{ 'selected' if order_val|string == i|string }}>{{ i }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+
+            </div>
+          {% endfor %}
+        </div>
+      </div>      
+      
+      <button type="submit" class="btn btn-primary"
+              style="margin-top:16px; margin-bottom:16px; align-self:center; padding:0 32px;">
+        Save
+      </button>    
+      
+      <hr style="border: 0; border-top: 1px solid var(--border-soft); margin: 16px 0 24px;">
+      
+      <div class="settings-section">
+        <label class="settings-label">Export Data</label>
+        <p class="settings-hint">
+          Download all your notes as a ZIP file. The structure will match your folders,
+          properties will be saved as YAML frontmatter, and attachments will be moved to
+          an `Assets` folder. This is fully compatible with Obsidian.
+        </p>
+        <div style="display:flex; justify-content:center;">
+          <a href="{{ url_for('export_markdown') }}"
+             class="btn btn-primary"
+             style="text-decoration: none; padding:0 24px;">
+            <span class="material-symbols-rounded">download</span>
+            Export to Markdown (ZIP)
+          </a>
+        </div>
+      </div>    
+    </form>
+
+    <hr style="border: 0; border-top: 1px solid var(--border-soft); margin: 24px 0 16px;">
+
+    <div class="settings-section">
+      <label class="settings-label">Captures</label>
+      <p class="settings-hint">
+        Quick actions that appear in the “+” new-note menu. Each one targets a specific note.
+      </p>
+
+      <div id="captures-list" class="captures-list"></div>
+
+      <details class="captures-add" id="captures-add">
+        <summary class="btn" style="cursor:pointer">+ Add capture</summary>
+        <div class="captures-form">
+          <label class="settings-label">
+            Name
+            <input type="text" id="cap-name" class="settings-input" placeholder="e.g. Journal entry">
+          </label>
+
+          <label class="settings-label">
+            Kind
+            <select id="cap-kind" class="settings-select">
+              <option value="new_child">New note (child of target)</option>
+              <option value="append_text">Append text to target</option>
+              <option value="attach_file">Attach file to target</option>
+              <option value="daily_note">Daily note (append / attach to today)</option>
+            </select>
+          </label>
+
+          <label class="settings-label">
+            Target note
+            <input type="text" id="cap-target-input" class="settings-input" placeholder="Search notes…"
+                   autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+            <input type="hidden" id="cap-target-id">
+            <div id="cap-target-results" class="ac-list"></div>
+            <div id="cap-target-chosen" class="ac-chosen" style="display:none"></div>
+          </label>
+
+          <!-- new_child-only fields -->
+          <div class="cap-kind-fields" data-kind="new_child">
+            <label class="settings-label">
+              Title template (optional, supports &#123;&#123;date&#125;&#125;, &#123;&#123;time&#125;&#125;, etc.)
+              <input type="text" id="cap-title-tpl" class="settings-input" placeholder="e.g. Journal &#123;&#123;date&#125;&#125;">
+            </label>
+            <label class="settings-label">
+              Body template (optional)
+              <textarea id="cap-body-tpl" class="settings-input" rows="3" placeholder="Body content…"></textarea>
+            </label>
+            <label class="settings-label">
+              Apply existing template (optional)
+              <input type="text" id="cap-template-input" class="settings-input" placeholder="Search templates…"
+                     autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+              <input type="hidden" id="cap-template-id">
+              <div id="cap-template-results" class="ac-list"></div>
+              <div id="cap-template-chosen" class="ac-chosen" style="display:none"></div>
+            </label>
+
+            <label class="settings-label">
+              After creating the note
+              <select id="cap-new-after" class="settings-select">
+                <option value="navigate">Open the new note</option>
+                <option value="stay">Stay where I am</option>
+              </select>
+            </label>
+          </div>
+
+          <!-- append_text / attach_file only fields -->
+          <div class="cap-kind-fields" data-kind="append_text attach_file">
+            <label class="settings-label">
+              After running
+              <select id="cap-after" class="settings-select">
+                <option value="toast">Show a toast</option>
+                <option value="navigate">Open the target note</option>
+                <option value="stay">Do nothing</option>
+              </select>
+            </label>
+          </div>
+
+          <!-- daily_note-only fields -->
+          <div class="cap-kind-fields" data-kind="daily_note">
+            <p class="settings-hint">
+              Creates today's entry under the Journal folder (set above) if it
+              doesn't exist yet, then runs the chosen action on it.
+            </p>
+            <label class="settings-label">
+              Title template (supports &#123;&#123;date&#125;&#125;, &#123;&#123;day&#125;&#125;, &#123;&#123;year&#125;&#125;, &#123;&#123;month&#125;&#125;, etc.)
+              <input type="text" id="cap-daily-title-tpl" class="settings-input"
+                     placeholder="&#123;&#123;date&#125;&#125;" value="&#123;&#123;date&#125;&#125;">
+            </label>
+            <label class="settings-label">
+              Body template (used only when today's note is first created)
+              <textarea id="cap-daily-body-tpl" class="settings-input" rows="3"
+                        placeholder="Body content…"></textarea>
+            </label>
+            <label class="settings-label">
+              Apply existing template (optional, for the newly-created note)
+              <input type="text" id="cap-daily-template-input" class="settings-input"
+                     placeholder="Search templates…"
+                     autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+              <input type="hidden" id="cap-daily-template-id">
+              <div id="cap-daily-template-results" class="ac-list"></div>
+              <div id="cap-daily-template-chosen" class="ac-chosen" style="display:none"></div>
+            </label>
+            <label class="settings-label">
+              Text prefix (optional, supports &#123;&#123;time&#125;&#125;, &#123;&#123;date&#125;&#125;, etc.)
+              <input type="text" id="cap-daily-prefix" class="settings-input"
+                     placeholder="e.g. &#123;&#123;time&#125;&#125;">
+            </label>
+            <label class="settings-label">
+              Text suffix (optional)
+              <input type="text" id="cap-daily-suffix" class="settings-input"
+                     placeholder="e.g. &#123;&#123;date&#125;&#125;">
+            </label>
+            
+            <label class="settings-label">
+              Action
+              <select id="cap-daily-action" class="settings-select">
+                <option value="append_text">Append text</option>
+                <option value="attach_file">Attach a file</option>
+                <option value="open">Just open today's note</option>
+              </select>
+            </label>
+
+            <label class="settings-label">
+              After running
+              <select id="cap-daily-after" class="settings-select">
+                <option value="stay">Stay where I am</option>
+                <option value="navigate">Open today's note</option>
+              </select>
+            </label>
+          </div>
+
+          <div style="display:flex; justify-content:center; gap:8px; margin-top:12px; width:100%;">
+            <button type="button" class="btn btn-primary" id="cap-save" style="padding:0 24px;">Save capture</button>
+            <button type="button" class="btn" id="cap-cancel" style="padding:0 24px;">Cancel</button>
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <hr style="border: 0; border-top: 1px solid var(--border-soft); margin: 24px 0 12px;">
+
+    <a href="{{ url_for('logout') }}" class="settings-signout">
+      <span class="material-symbols-rounded">logout</span>
+      Sign out
+    </a>
+  </div>
+</div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const form = document.getElementById('settings-form');
+    if (!form) return;
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault(); // Stop the browser from navigating
+
+      const submitBtn = form.querySelector('button[type="submit"]');
+      const originalText = submitBtn.innerHTML;
+      submitBtn.innerHTML = 'Saving…';
+      submitBtn.disabled = true;
+
+      try {
+        const formData = new FormData(form);
+        const response = await fetch(form.action || window.location.href, {
+          method: 'POST',
+          body: formData
+        });
+
+        if (response.redirected) {
+          // Flask redirected us, which means success.
+          // Use replace so the POST doesn't get added to history.
+          window.location.replace(response.url);
+        } else {
+          // No redirect? Just reload to be safe.
+          window.location.replace(window.location.href);
+        }
+      } catch (err) {
+        alert('Failed to save settings: ' + err.message);
+        submitBtn.innerHTML = originalText;
+        submitBtn.disabled = false;
+      }
+    });
+  });
+</script>
+
+{% endblock %}

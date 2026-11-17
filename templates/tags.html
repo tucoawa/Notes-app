@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="parent-bar">
+  <button id="sidebar-open" class="icon-btn" title="Open sidebar (Ctrl+\)">
+    <span class="material-symbols-rounded">menu</span>
+  </button>
+  <span class="parent-bar-spacer"></span>
+  <span class="results-count">
+    {{ grouped|length }} tag{{ 's' if grouped|length != 1 }}
+    &middot; {{ total_notes }} note{{ 's' if total_notes != 1 }}
+  </span>
+</div>
+
+<div class="editor-main scroll-pane">
+  <div class="settings-page" style="max-width: 720px;">
+    {% if not grouped %}
+      <p class="settings-hint">
+        No tags yet. Add a <code>tags</code> property to a note and its
+        values will show up here.
+      </p>
+    {% else %}
+      {% for tag_name, entry in grouped.items() %}
+        <div class="tag-group">
+          <div class="tag-group-head">
+            <!-- Header is the tag name, links to a search for this tag -->
+            <a class="tag-key-link"
+               href="{{ url_for('index') }}?prop_key=tags&prop_val={{ tag_name|urlencode }}&sort_by=title&sort_dir=asc"
+               title="Show all notes tagged with '{{ tag_name }}'">
+              <span class="material-symbols-rounded">sell</span>
+              <span class="tag-key">{{ tag_name }}</span>
+            </a>
+            <span class="tag-count">
+              {{ entry.note_count }} note{{ 's' if entry.note_count != 1 }}
+            </span>
+          </div>
+          <div class="tag-values">
+            <!-- Chips are the individual notes -->
+            {% for n in entry.notes %}
+              <a class="tag-chip"
+                 href="{{ url_for('index', note=n.id) }}"
+                 title="Open note">
+                <span class="material-symbols-rounded" style="font-size: 16px; margin-right: 2px;">description</span>
+                <span class="tag-val">{{ n.title }}</span>
+              </a>
+            {% endfor %}
+          </div>
+        </div>
+      {% endfor %}
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

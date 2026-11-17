@@ -1,0 +1,312 @@
+<aside class="sidebar">
+
+  <div class="sidebar-search">
+    <div class="search-row">
+      <form action="{{ url_for('index') }}" method="get" class="search-form" id="search-form"
+            onsubmit="const s = this.querySelector('input[name=\'search\']'); if (s) s.value = '';
+                      ['prop_key', 'prop_val', 'exclude_status', 'due_date', 'due_op'].forEach(n => {
+                        const el = document.querySelector('input[name=\'' + n + '\'], select[name=\'' + n + '\']');
+                        if (el) el.value = '';
+                      });
+                      if (typeof prepareSearchForm === 'function') prepareSearchForm(this);
+                      return (typeof validateSearchForm === 'function' ? validateSearchForm() : true);">
+        <input type="hidden" name="search" value="{{ current_search_id or '' }}">
+        <span class="material-symbols-rounded search-icon">search</span>
+        <input type="search" name="q" placeholder="Search…" value="{{ '' if current_search_id else (search_q or '') }}" id="search-q">
+        <button type="button" class="icon-btn clear-btn {{ 'hidden' if not (search_q or prop_key or (due_date and due_op)) else '' }}"
+                id="clear-search" title="Clear search">
+          <span class="material-symbols-rounded" style="font-size:18px">close</span>
+        </button>
+        <button type="submit" class="icon-btn" title="Search">
+          <span class="material-symbols-rounded">arrow_forward</span>
+        </button>
+      </form>
+
+      <button type="button" class="icon-btn adv-toggle-btn" id="adv-toggle"
+              title="Advanced search">
+        <span class="material-symbols-rounded">tune</span>
+      </button>
+    </div>
+
+    <div class="adv-search" id="adv-search">
+      <div class="adv-input-wrap">
+        <input type="text" name="prop_key" placeholder="property"
+               value="{{ '' if current_search_id else (prop_key or '') }}" id="adv-prop-key"
+               form="search-form">
+        <button type="button" class="adv-input-clear" data-target="adv-prop-key" title="Clear">
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div class="adv-input-wrap">
+        <input type="text" name="prop_val" placeholder="value"
+               value="{{ '' if current_search_id else (prop_val or '') }}" id="adv-prop-val"
+               form="search-form">
+        <button type="button" class="adv-input-clear" data-target="adv-prop-val" title="Clear">
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+
+      <select id="adv-status-preset" form="search-form">
+        <option value="">Status…</option>
+        {% for val in (status_values or []) %}
+          <option value="{{ val }}" {{ 'selected' if not current_search_id and prop_key == 'status' and prop_val == val }}>{{ val }}</option>
+        {% endfor %}
+      </select>
+
+      <label class="adv-exclude-label">
+        <input type="checkbox" id="adv-exclude-done"
+               {{ 'checked' if not current_search_id and exclude_status and 'done' in exclude_status and 'canceled' in exclude_status }}>
+        Hide closed
+      </label>
+
+      <div class="adv-due-row">
+        <select name="due_op" form="search-form" id="adv-due-op"
+                class="{{ 'has-value' if (due_op and not current_search_id) else '' }}">
+          <option value=""    {{ 'selected' if not current_search_id and not due_op }} disabled>—</option>
+          <option value="any" {{ 'selected' if not current_search_id and due_op == 'any' }}>Any date</option>
+          <option value="<"   {{ 'selected' if not current_search_id and due_op == '<' }}>Before</option>
+          <option value="<="  {{ 'selected' if not current_search_id and due_op == '<=' }}>On or before</option>
+          <option value="="   {{ 'selected' if not current_search_id and due_op == '=' }}>On</option>
+          <option value=">="  {{ 'selected' if not current_search_id and due_op == '>=' }}>On or after</option>
+          <option value=">"   {{ 'selected' if not current_search_id and due_op == '>' }}>After</option>
+        </select>
+        <button type="button" class="btn adv-today-btn {% if not current_search_id and due_date_raw == 'today' %}active{% endif %}" id="adv-today-btn"
+                title="Set today's date">Today</button>
+        <input type="date" name="due_date" value="{{ '' if current_search_id else (due_date or '') }}"
+               form="search-form" id="adv-due-date"
+               data-dynamic="{{ 'today' if (not current_search_id and due_date_raw == 'today') else '' }}">
+        <button type="button" class="btn adv-clear-date-btn hidden" id="adv-clear-date" title="Clear date">
+          <span class="material-symbols-rounded" style="font-size:16px">close</span>
+        </button>
+      </div>
+
+      <!-- NEW FILTERS START HERE -->
+      <div style="display: flex; gap: 4px; grid-column: 1 / -1; align-items: center;">
+        <select name="prop_has" form="search-form" class="adv-new-select">
+          <option value="">Has property…</option>
+          {% for k in all_prop_values.keys()|sort %}
+            <option value="{{ k }}" {{ 'selected' if not current_search_id and request.args.get('prop_has') == k }}>{{ k }}</option>
+          {% endfor %}
+        </select>
+
+        <select name="parent_filter" form="search-form" class="adv-new-select">
+          <option value="">Parent note…</option>
+          {% for n in parent_notes %}
+            <option value="{{ n.id }}" {{ 'selected' if not current_search_id and request.args.get('parent_filter') == n.id|string }}>{{ n.title }}</option>
+          {% endfor %}
+        </select>
+
+        <button type="submit" class="icon-btn adv-search-submit-new" title="Search">
+          <span class="material-symbols-rounded">arrow_forward</span>
+        </button>
+      </div>
+      <!-- NEW FILTERS END HERE -->
+
+      <button type="button" class="btn" id="adv-search-submit-btn" style="display: none;">
+        <span class="material-symbols-rounded" style="font-size:16px">search</span>
+        Search
+      </button>
+      <p id="adv-search-msg" style="display:none; grid-column: 1 / -1; font-size: 12px; color: var(--warn); padding: 2px 4px; margin: 0;">
+        Select at least one filter.
+      </p>
+    </div>
+  </div>
+
+  <div class="sidebar-body">
+
+    <div class="tree-section" data-tree-section>
+
+      <div class="select-bar">
+        <span class="select-bar-count">0 selected</span>
+        <button type="button" class="btn-mini" data-select-action="all">
+          <span class="material-symbols-rounded">checklist</span>
+          All
+        </button>
+        <button type="button" class="btn-mini danger" data-select-action="delete">
+          <span class="material-symbols-rounded">delete</span>
+          Delete
+        </button>
+        <button type="button" class="btn-mini" data-select-action="cancel">
+          <span class="material-symbols-rounded">close</span>
+          Cancel
+        </button>
+      </div>	
+      {% macro render_note(n, query_suffix) %}
+        {% set children = n.has_children %}
+        <li class="tree-node {% if current and n.id == current.id %}row-active{% endif %} {% if n.is_custom %}custom-virtual-note{% endif %}" data-note-id="{{ n.id }}">
+          <div class="tree-row">
+            <span class="tree-checkbox" data-select-toggle>
+              <span class="material-symbols-rounded">check_box_outline_blank</span>
+            </span>
+            
+            <a href="{{ url_for('index', note=n.id) }}"
+               class="tree-link {{ 'active' if current and n.id == current.id }}"
+               data-note-id="{{ n.id }}"
+               title="{{ n.title }}">
+              <span class="material-symbols-rounded note-icon {% if children %}tree-folder-icon{% endif %}" 
+                    {% if children %}data-action="toggle-node" data-note-id="{{ n.id }}"{% endif %}>
+                {{ 'bookmark' if n.is_template else ('map' if n.is_map_note else ('folder' if children else 'description')) }}
+              </span>
+              <span class="tree-label">{{ n.title }}</span>
+            </a>
+
+            {% if not n.is_custom %}
+            <button class="row-btn" data-action="new-note" data-parent-id="{{ n.id }}" title="New child note">
+              <span class="material-symbols-rounded">add</span>
+            </button>
+            <button class="row-btn" data-action="note-menu" data-note-id="{{ n.id }}" data-current="{{ n.title }}" title="More">
+              <span class="material-symbols-rounded">more_vert</span>
+            </button>
+            {% endif %}
+            {% if children %}
+            <button class="row-btn" data-action="sort-folder" data-note-id="{{ n.id }}" data-sort-by="{{ n.sort_by or 'modified' }}" data-sort-dir="{{ n.sort_dir or 'asc' }}" data-hidden="1" title="Sort children" style="display:none !important;">
+              <span class="material-symbols-rounded"></span>
+            </button>
+            {% endif %}
+          </div>
+
+          {% if children %}
+            <ul class="tree-list nested" style="display: none;">
+              {% if n.id == 'pinned-section' %}
+                {% for pn in pinned_notes %}
+                  <li class="{% if current and current.id == pn.id %}row-active{% endif %}">
+                    <div class="tree-row">
+                      <a href="{{ url_for('index', note=pn.id) }}" class="tree-link" data-note-id="{{ pn.id }}">
+                        <span class="material-symbols-rounded note-icon">description</span>
+                        <span class="tree-label">{{ pn.title }}</span>
+                      </a>
+                    </div>
+                  </li>
+                {% endfor %}
+              {% elif n.id == 'recent-section' %}
+                <!-- Empty container, populated by JavaScript renderRecent() -->
+                <li style="display:none;"></li>
+              {% elif n.id == 'saved-search-section' %}
+                {% for s in saved_searches %}
+                  {% set sort_qs = 'sort_by=' ~ s.sort_by ~ '&sort_dir=' ~ s.sort_dir %}
+                  {% set full_qs = (s.params ~ '&' if s.params else '') ~ sort_qs %}
+                  <li class="tree-node saved-search-item">
+                    <div class="tree-row">
+                      <a href="{{ url_for('index') }}?{{ full_qs }}&search={{ s.id }}"
+                         class="tree-link saved-search-link {{ 'active' if current_search_id and current_search_id == s.id else '' }}"
+                         data-search-id="{{ s.id }}">
+                        <span class="material-symbols-rounded note-icon">bookmark</span>
+                        <span class="tree-label">{{ s.name }}</span>
+                      </a>
+                      <button class="row-btn" data-action="rename-search" data-search-id="{{ s.id }}" data-current="{{ s.name }}" title="Rename">
+                        <span class="material-symbols-rounded">edit</span>
+                      </button>
+                      <button class="row-btn" data-action="delete-search" data-search-id="{{ s.id }}" title="Delete">
+                        <span class="material-symbols-rounded">close</span>
+                      </button>
+                    </div>
+                  </li>
+                {% endfor %}
+              {% endif %}
+            </ul>
+          {% endif %}
+        </li>
+      {% endmacro %}
+
+      <ul class="tree-list root-level">
+        
+        <!-- 1. ROOT ROW -->
+        <li class="tree-node root-item">
+          <div class="tree-row">
+            <span class="tree-arrow empty"></span>
+            <a href="{{ url_for('index', note=root_id) if root_id else url_for('index') }}"
+               class="tree-link {{ 'active' if current and root_id and current.id == root_id }}"
+               data-note-id="{{ root_id or '' }}"
+               title="Root">
+              <span class="material-symbols-rounded note-icon">home</span>
+              <span class="tree-label">Root</span>
+            </a>
+
+            <button type="button" class="row-btn" data-action="new-note"
+                    data-parent-id="{{ root_id or '' }}" title="New top-level note">
+              <span class="material-symbols-rounded">add</span>
+            </button>
+
+            <button type="button" class="row-btn" id="toggle-all-fold"
+                    title="Fold / unfold all">
+              <span class="material-symbols-rounded" id="fold-icon">unfold_more</span>
+            </button>
+
+            <button type="button" class="row-btn" data-action="sort-folder"
+                    data-note-id="{{ root_id or '' }}"
+                    data-sort-by="{{ root_sort_by or 'modified' }}"
+                    data-sort-dir="{{ root_sort_dir or 'asc' }}"
+                    title="Sort top level">
+              <span class="material-symbols-rounded">sort</span>
+            </button>
+          </div>
+        </li>
+
+        <!-- 5. REGULAR NOTES -->
+        {% for n in sorted_tops %}
+          {{ render_note(n, query_suffix) }}
+        {% endfor %}
+        {% if total_top_level and total_top_level > sorted_tops|length %}
+          <li style="padding: 8px 12px; color: var(--text-faint); font-size: 13px;">
+            Showing {{ sorted_tops|length }} of {{ total_top_level }} top-level items.
+            Use search to find the rest.
+          </li>
+        {% endif %}
+      </ul>
+
+      {% if not sorted_tops %}
+        <p style="padding:12px;color:var(--text-faint);font-size:13px">
+          No notes yet. Tap the + next to root.
+        </p>
+      {% endif %}
+    </div>
+  </div>
+  
+  <div class="sidebar-head">
+    <button id="quick-switcher-btn" class="icon-btn" title="Quick switch">
+      <span class="material-symbols-rounded">search</span>
+    </button>  	
+  	
+    <button type="button" class="icon-btn" title="Dashboard"
+            onclick="localStorage.setItem('sidebar-collapsed','1'); location.href='{{ url_for('dashboard') }}';">
+      <span class="material-symbols-rounded">dashboard</span>
+    </button>
+
+    <button type="button" class="icon-btn" id="calendar-btn" title="Open calendar">
+      <span class="material-symbols-rounded">calendar_month</span>
+    </button>
+
+    <button type="button" class="icon-btn" title="Tags"
+            onclick="localStorage.setItem('sidebar-collapsed','1'); location.href='{{ url_for('tags') }}';">
+      <span class="material-symbols-rounded">sell</span>
+    </button>
+    
+    <button type="button" class="icon-btn" title="Properties"
+            onclick="localStorage.setItem('sidebar-collapsed','1'); location.href='{{ url_for('properties') }}';">
+      <span class="material-symbols-rounded">label</span>
+    </button>
+    
+    <button type="button" class="icon-btn" title="Trash"
+            onclick="localStorage.setItem('sidebar-collapsed','1'); location.href='{{ url_for('trash') }}';">
+      <span class="material-symbols-rounded">delete</span>
+    </button>    
+    
+    <!-- Settings moved here -->
+    <button type="button" class="icon-btn" title="Settings"
+            onclick="localStorage.setItem('sidebar-collapsed','1'); location.href='{{ url_for('settings') }}';">
+      <span class="material-symbols-rounded">settings</span>
+    </button>
+    
+  </div>  
+
+  <button type="button" class="sidebar-close-btn" id="sidebar-close-btn" title="Close sidebar">
+    <span class="material-symbols-rounded">menu</span>
+  </button>
+</aside>
+
+<datalist id="prop-keys-all">
+  {% for k in all_prop_values.keys() %}
+    <option value="{{ k }}"></option>
+  {% endfor %}
+</datalist>
+<datalist id="prop-values-all"></datalist>

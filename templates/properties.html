@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="parent-bar">
+  <button id="sidebar-open" class="icon-btn" title="Open sidebar (Ctrl+\)">
+    <span class="material-symbols-rounded">menu</span>
+  </button>
+  <span class="parent-bar-spacer"></span>
+  <span class="results-count">
+    {{ grouped|length }} propert{{ 'y' if grouped|length == 1 else 'ies' }}
+    &#183; {{ total_notes }} note{{ 's' if total_notes != 1 }}
+  </span>
+</div>
+
+<div class="editor-main scroll-pane">
+  <div class="settings-page" style="max-width: 720px;">
+    {% if not grouped %}
+      <p class="settings-hint">
+        No properties yet. Add a property to a note (the label icon in the
+        action bar) and it will show up here.
+      </p>
+    {% else %}
+      {% for key, entry in grouped.items() %}
+        <div class="tag-group">
+          <div class="tag-group-head">
+            <a class="tag-key-link"
+               href="{{ url_for('index') }}?prop_key={{ key|urlencode }}&sort_by=modified&sort_dir=desc"
+               title="Show all notes with a '{{ key }}' property">
+              <span class="material-symbols-rounded">label</span>
+              <span class="tag-key">{{ key }}</span>
+            </a>
+            <span class="tag-count">
+              {{ entry['note_count'] }} note{{ 's' if entry['note_count'] != 1 }}
+              &middot; {{ entry['value_count'] }} value{{ 's' if entry['value_count'] != 1 }}
+            </span>
+          </div>
+          <div class="tag-values">
+            {% for val, count in entry['values'] %}
+              <a class="tag-chip"
+                 href="{{ url_for('index') }}?prop_key={{ key|urlencode }}&prop_val={{ val|urlencode }}&sort_by=modified&sort_dir=desc"
+                 title="{{ count }} note{{ 's' if count != 1 }}">
+                <span class="tag-val">{{ val }}</span>
+                <span class="tag-num">{{ count }}</span>
+              </a>
+            {% endfor %}
+          </div>
+        </div>
+      {% endfor %}
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

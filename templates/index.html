@@ -1,0 +1,963 @@
+{% extends "base.html" %}
+{% block content %}
+
+{% macro render_result_card(n, level=0) %}
+  {% set parent_path = [] %}
+  {% set p = n.parent %}
+  {% set guard = [] %}
+  {% for _ in range(20) %}
+    {% if p and p.id not in guard %}
+      {% set _ = guard.append(p.id) %}
+      {% set _ = parent_path.insert(0, p.title) %}
+      {% set p = p.parent %}
+    {% endif %}
+  {% endfor %}
+  
+{% set active_kids = n.children|rejectattr('deleted_at')|list %}
+{% set has_children = active_kids|length > 0 %}
+{% set node_kids = active_kids|sort_children(n.sort_by, n.sort_dir or 'asc') %}
+  
+  <div class="result-card outline-node" data-note-id="{{ n.id }}" role="link">
+    <div class="result-card-header">
+      <span class="result-checkbox" data-select-toggle>
+        <span class="material-symbols-rounded">check_box_outline_blank</span>
+      </span>
+      
+      {% if has_children %}
+        <button type="button" class="result-chevron outline-bullet" data-action="toggle-search-outline" title="Toggle children">
+          <span class="material-symbols-rounded">chevron_right</span>
+        </button>
+      {% endif %}
+      
+      <!-- ADDED ICON HERE -->
+      <span class="material-symbols-rounded result-icon">
+        {{ 'folder' if has_children else 'description' }}
+      </span>
+      
+      <div class="result-text">
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0;">
+          <div class="result-title" style="flex-shrink: 0;">{{ n.title }}</div>
+          
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+            {% if n.properties and n.properties.due %}
+              <span class="prop-chip-tappable"
+                    data-note-id="{{ n.id }}"
+                    data-note-title="{{ n.title }}"
+                    data-kind="due"
+                    data-due="{{ n.properties.due }}"
+                    data-priority="{{ n.properties.priority or '' }}"
+                    data-urgency="{{ n.properties.urgency or '' }}"
+                    style="font-size: 11px; background: var(--bg-input); color: var(--text-dim); padding: 2px 6px; border-radius: 8px; cursor: pointer;">
+                <span class="chip-label">{{ n.properties.due }}</span>
+              </span>
+            {% endif %}        	
+            {% if n.properties and n.properties.priority %}
+              <span class="prop-chip-tappable"
+                    data-note-id="{{ n.id }}"
+                    data-note-title="{{ n.title }}"
+                    data-kind="priority"
+                    data-due="{{ n.properties.due or '' }}"
+                    data-priority="{{ n.properties.priority }}"
+                    data-urgency="{{ n.properties.urgency or '' }}"
+                    style="font-size: 11px; background: var(--bg-input); color: var(--accent); padding: 2px 6px; border-radius: 8px; cursor: pointer;">
+                <span class="chip-label">P{{ n.properties.priority }}</span>
+              </span>
+            {% endif %}
+            {% if n.properties and n.properties.urgency %}
+              <span class="prop-chip-tappable"
+                    data-note-id="{{ n.id }}"
+                    data-note-title="{{ n.title }}"
+                    data-kind="urgency"
+                    data-due="{{ n.properties.due or '' }}"
+                    data-priority="{{ n.properties.priority or '' }}"
+                    data-urgency="{{ n.properties.urgency }}"
+                    style="font-size: 11px; background: var(--bg-input); color: var(--warn); padding: 2px 6px; border-radius: 8px; cursor: pointer;">
+                <span class="chip-label">U{{ n.properties.urgency }}</span>
+              </span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      
+      {% if n.due_at %}
+        <span class="result-due" title="{{ n.due_at.strftime('%d/%m/%Y') }}">
+          <span class="material-symbols-rounded">alarm</span>
+        </span>
+      {% endif %}
+
+      <button type="button" class="row-btn search-result-menu-btn" 
+              data-note-id="{{ n.id }}" 
+              data-current="{{ n.title }}" 
+              title="More" 
+              style="opacity: 1; margin-left: auto;">
+        <span class="material-symbols-rounded">more_vert</span>
+      </button>
+    </div>
+
+    {% if has_children %}
+      <div class="result-children outline-sub" style="display: none;">
+        {% for c in node_kids %}
+          {{ render_result_card(c, level+1) }}
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{% macro render_results_group(title, notes) %}
+  {% set gid = ('g-' ~ title)|replace(' ', '-')|replace('/', '-') %}
+  {% set is_overdue = (
+       group_by == '_due'
+       and title
+       and title != 'No due date'
+       and title < now_date
+  ) %}
+
+  <div class="result-group" data-group-id="{{ gid }}">
+    {% if title %}
+      <div class="result-group-head {{ 'overdue' if is_overdue }}" data-action="toggle-group" data-group-id="{{ gid }}">
+        <span class="material-symbols-rounded">chevron_right</span>
+        <span class="result-group-title">{{ title }}</span>
+        <span class="result-group-count">{{ notes|length }}</span>
+      </div>
+    {% endif %}
+    <div class="result-group-body">
+      {% for n in notes %}
+        {{ render_result_card(n) }}
+      {% endfor %}
+    </div>
+  </div>
+{% endmacro %}
+
+{% if search_active %}
+
+<div class="parent-bar">
+  
+  <span class="results-count" style="margin-left: 8px;">{{ results|length }} result{{ 's' if results|length != 1 }}</span>
+  
+  <span class="parent-bar-spacer"></span>
+  
+  {% if current_search_id %}
+  <button type="button" class="icon-btn" id="update-search" title="Update this search with current filters">
+    <span class="material-symbols-rounded">sync</span>
+  </button>
+  {% endif %}
+  <button type="button" class="icon-btn" id="save-search" title="Save as new search">
+    <span class="material-symbols-rounded">bookmark_add</span>
+  </button>
+</div>
+
+<div class="editor-main scroll-pane" onscroll="handleMainScroll(this)">
+  
+  <div class="results-toolbar">
+    <button type="button" class="icon-btn" id="results-view-toggle" title="Toggle Table View">
+      <span class="material-symbols-rounded">table_view</span>
+    </button>
+    <button type="button" class="icon-btn" id="results-select-btn" title="Select notes">
+      <span class="material-symbols-rounded">checklist</span>
+    </button>
+    <select id="results-sort-by" class="sort-select" title="Sort by">
+      <option value="modified" {{ 'selected' if current_sort == 'modified' }}>modified</option>
+      <option value="title"    {{ 'selected' if current_sort == 'title' }}>title</option>
+      <option value="created"  {{ 'selected' if current_sort == 'created' }}>created</option>
+      <option value="due"      {{ 'selected' if current_sort == 'due' }}>due</option>
+      {% for k in all_prop_values.keys()|sort %}
+        {% if k not in ('modified', 'title', 'created', 'due') %}
+          <option value="{{ k }}" {{ 'selected' if current_sort == k }}>{{ k }}</option>
+        {% endif %}
+      {% endfor %}
+    </select>
+    <select id="results-sort-dir" class="sort-select" title="Direction">
+      <option value="desc" {{ 'selected' if current_sort_dir == 'desc' }}>↓</option>
+      <option value="asc"  {{ 'selected' if current_sort_dir == 'asc' }}>↑</option>
+    </select>
+    <select id="results-group-by" class="sort-select" title="Group by">
+      <option value=""        {{ 'selected' if not group_by }}>No grouping</option>
+      <option value="_parent" {{ 'selected' if group_by == '_parent' }}>parent</option>
+      <option value="_due"    {{ 'selected' if group_by == '_due' }}>due</option>
+      {% for k in all_prop_values.keys()|sort %}
+        {% if k not in ('modified', 'title', 'created', 'due') %}
+          <option value="{{ k }}" {{ 'selected' if group_by == k }}>{{ k }}</option>
+        {% endif %}
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="select-bar results-select-bar">
+    <span class="select-bar-count">0 selected</span>
+    <button type="button" class="btn-mini" data-results-select-action="all">
+      <span class="material-symbols-rounded">checklist</span>All
+    </button>
+    <button type="button" class="btn-mini" data-results-select-action="move">
+      <span class="material-symbols-rounded">drive_file_move</span>Move
+    </button>
+    <button type="button" class="btn-mini danger" data-results-select-action="delete">
+      <span class="material-symbols-rounded">delete</span>Delete
+    </button>
+    <button type="button" class="btn-mini" data-results-select-action="cancel">
+      <span class="material-symbols-rounded">close</span>Cancel
+    </button>
+  </div>
+
+<div id="results-table-view" style="display:none; flex-direction:column; flex:1; min-width:0; overflow:hidden;">
+    <div class="table-column-picker">
+      <span class="table-picker-label">Columns:</span>
+      <div id="table-col-options"></div>
+    </div>
+    <div class="table-scroll-wrap">
+      <table class="results-table">
+        <thead id="results-table-head"></thead>
+        <tbody id="results-table-body"></tbody>
+        <tfoot></tfoot>
+      </table>
+    </div>
+  </div>
+  
+<script>
+  window.SEARCH_RESULTS_PROPS = {};
+  {% for n in results %}
+    window.SEARCH_RESULTS_PROPS["{{ n.id }}"] = {{ (n.properties or {})|tojson }};
+  {% endfor %}
+  window.SAVED_VIEW_MODE = {{ (view_mode or 'list')|tojson }};
+  
+  {% if current_search_id %}
+    window.NOTE_ID = "search-{{ current_search_id }}";
+    window.NOTE_TITLE = {{ current_search_name|default('Search #' ~ current_search_id)|tojson }};
+  {% elif search_active %}
+    window.NOTE_ID = "search-unsaved";
+    window.NOTE_TITLE = "Search Results";
+  {% endif %}
+</script>
+
+<div class="results-list" id="results-list-container" data-results-section onscroll="handleMainScroll(this)">
+    {% if not results %}
+      <p class="empty">No results.</p>
+    {% elif not group_by %}
+      {{ render_results_group('', results) }}
+    {% else %}
+      {% if group_by == '_parent' %}
+        {% set grouped = {} %}
+        {% set order = [] %}
+        {% for n in results %}
+          {% set key = (n.parent.title if n.parent else 'Root') %}
+          {% if key not in grouped %}
+            {% set _ = grouped.update({key: []}) %}
+            {% set _ = order.append(key) %}
+          {% endif %}
+          {% set _ = grouped[key].append(n) %}
+        {% endfor %}
+      {% elif group_by == '_due' %}
+        {% set grouped = {} %}
+        {% set order = [] %}
+        {% for n in results %}
+          {% if n.due_at %}
+            {% set key = n.due_at.strftime('%Y-%m-%d') %}
+          {% else %}
+            {% set raw = (n.properties or {}).get('due', '')|string %}
+            {% set key = raw if raw and raw|length == 10 else 'No due date' %}
+          {% endif %}
+          {% if key not in grouped %}
+            {% set _ = grouped.update({key: []}) %}
+            {% set _ = order.append(key) %}
+          {% endif %}
+          {% set _ = grouped[key].append(n) %}
+        {% endfor %}
+      {% else %}
+        {% set grouped = {} %}
+        {% set order = [] %}
+        {% for n in results %}
+          {% set val = (n.properties or {}).get(group_by, '') %}
+          {% set key = (val|string) if val else '(none)' %}
+          {% if key not in grouped %}
+            {% set _ = grouped.update({key: []}) %}
+            {% set _ = order.append(key) %}
+          {% endif %}
+          {% set _ = grouped[key].append(n) %}
+        {% endfor %}
+      {% endif %}
+
+      {% for key in order|sort %}
+        {{ render_results_group(key, grouped[key]) }}
+      {% endfor %}
+    {% endif %}
+  </div> <!-- This closes .results-list -->
+
+  <!-- Bottom Action Bar for Search Results -->
+  <div class="action-bar" id="search-action-bar" style="display: flex; justify-content: space-around; padding: 1px 16px; overflow: visible; flex-shrink: 0;">
+  <button class="icon-btn" id="search-action-bar-sidebar-toggle" title="Toggle sidebar">
+    <span class="material-symbols-rounded">menu</span>
+  </button>  	
+  	
+    <button class="icon-btn" id="search-action-dashboard" title="Dashboard">
+      <span class="material-symbols-rounded">dashboard</span>
+    </button>
+
+    <button class="icon-btn" id="search-action-quick-switcher" title="Quick switch">
+      <span class="material-symbols-rounded">search</span>
+    </button>
+
+    <button class="icon-btn" id="search-action-add-top" title="New note">
+      <span class="material-symbols-rounded">add</span>
+    </button>
+
+    <button class="icon-btn" id="search-action-add-map" title="New map note">
+      <span class="material-symbols-rounded">map</span>
+    </button>
+
+    <button class="icon-btn" id="search-action-quick-note" title="Quick Note">
+      <span class="material-symbols-rounded">bolt</span>
+    </button>
+
+    <button class="icon-btn" id="search-action-open-daily" title="Today's note">
+      <span class="material-symbols-rounded">auto_stories</span>
+    </button>
+  </div>
+
+</div> <!-- This closes .editor-main -->
+
+<script>
+  // Wait for the page to be ready
+  document.addEventListener('DOMContentLoaded', () => {
+    const quickSwitcher = document.getElementById('search-action-quick-switcher');
+    if (quickSwitcher) {
+      quickSwitcher.addEventListener('click', () => {
+        const btn = document.getElementById('quick-switcher-btn');
+        if (btn) btn.click();
+      });
+
+      document.getElementById('search-action-add-top').addEventListener('click', () => {
+        if (typeof window.__openNewNoteModal === 'function') {
+          window.__openNewNoteModal(window.ROOT_ID || null);
+        }
+      });
+
+      document.getElementById('search-action-add-map').addEventListener('click', async () => {
+        try {
+          const r = await fetch('/note/new-map', { method: 'POST' });
+          const data = await r.json();
+          if (data.ok && data.url) {
+            localStorage.setItem('sidebar-collapsed', '1');
+            window.instantNavigate?.();
+            location.replace(data.url);
+          }
+        } catch (err) { alert('Failed to create map note: ' + err.message); }
+      });
+
+      document.getElementById('search-action-quick-note').addEventListener('click', async () => {
+        try {
+          const r = await fetch('/note/quick', { method: 'POST' });
+          const data = await r.json();
+          if (data.ok && data.url) {
+            localStorage.setItem('sidebar-collapsed', '1');
+            window.instantNavigate?.();
+            location.replace(data.url);
+          }
+        } catch (err) { alert('Failed: ' + err.message); }
+      });
+
+      document.getElementById('search-action-open-daily').addEventListener('click', () => {
+        location.href = '/daily-note?nofocus=1';
+      });
+
+      document.getElementById('search-action-dashboard').addEventListener('click', () => {
+        localStorage.setItem('sidebar-collapsed', '1');
+        window.instantNavigate?.();
+        location.href = '/dashboard';
+      });
+    }
+  });
+</script>
+
+{% elif current %}
+
+{% if current.is_custom %}
+  <div class="parent-bar">
+    <span class="results-count" style="margin-left: 8px;">{{ current.title }}</span>
+    <span class="parent-bar-spacer"></span>
+  </div>
+  
+  <div class="editor-main scroll-pane custom-virtual-note-page">
+    <div class="results-list" style="padding: 16px;">
+      {% if current.id == 'pinned-section' %}
+        <h2 style="margin-bottom: 16px;">Pinned Notes</h2>
+        {% for pn in pinned_notes %}
+          <a href="/?note={{ pn.id }}" class="result-card" style="display: flex; align-items: center; gap: 12px; text-decoration: none;">
+            <span class="material-symbols-rounded result-icon">description</span>
+            <span class="result-title" style="font-size: 16px;">{{ pn.title }}</span>
+          </a>
+        {% endfor %}
+        {% if not pinned_notes %}<p class="settings-hint">No pinned notes.</p>{% endif %}
+
+      {% elif current.id == 'recent-section' %}
+        <h2 style="margin-bottom: 16px;">Recent Notes</h2>
+        <div id="recent-page-list"></div>
+        <script>
+          document.addEventListener('DOMContentLoaded', () => {
+            const recents = JSON.parse(localStorage.getItem('recent-notes') || '[]');
+            const list = document.getElementById('recent-page-list');
+            if (!recents.length) {
+              list.innerHTML = '<p class="settings-hint">No recent notes.</p>';
+            } else {
+              recents.forEach(r => {
+                list.innerHTML += `
+                  <a href="/?note=${r.id}" class="result-card" style="display: flex; align-items: center; gap: 12px; text-decoration: none;">
+                    <span class="material-symbols-rounded result-icon">description</span>
+                    <span class="result-title" style="font-size: 16px;">${r.title}</span>
+                  </a>
+                `;
+              });
+            }
+          });
+        </script>
+
+      {% elif current.id == 'saved-search-section' %}
+        <h2 style="margin-bottom: 16px;">Saved Searches</h2>
+        {% for s in saved_searches %}
+          <a href="/?search={{ s.id }}" class="result-card" style="display: flex; align-items: center; gap: 12px; text-decoration: none;">
+            <span class="material-symbols-rounded result-icon" style="color: var(--accent);">bookmark</span>
+            <span class="result-title" style="font-size: 16px;">{{ s.name }}</span>
+          </a>
+        {% endfor %}
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Action Bar for Custom Pages -->
+  <div class="action-bar" id="search-action-bar" style="display: flex; justify-content: space-around; padding: 1px 16px; overflow: visible; flex-shrink: 0;">
+    <!-- CHANGED ID HERE vvv -->
+    <button class="icon-btn" id="action-bar-sidebar-toggle" title="Toggle sidebar">
+      <span class="material-symbols-rounded">menu</span>
+    </button>  	
+    <button class="icon-btn" id="custom-dashboard" title="Dashboard">
+      <span class="material-symbols-rounded">dashboard</span>
+    </button>	
+    <button class="icon-btn" id="custom-quick-switcher" title="Quick switch">
+      <span class="material-symbols-rounded">search</span>
+    </button>
+    <button class="icon-btn" id="custom-quick-note" title="Quick Note">
+      <span class="material-symbols-rounded">bolt</span>
+    </button>
+    <button class="icon-btn" id="custom-add-top" title="New note">
+      <span class="material-symbols-rounded">add</span>
+    </button>
+    <button class="icon-btn" id="custom-add-map" title="New map note">
+      <span class="material-symbols-rounded">map</span>
+    </button>
+    <button class="icon-btn" id="custom-daily" title="Today's note">
+      <span class="material-symbols-rounded">auto_stories</span>
+    </button>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      // REMOVED the custom-sidebar-toggle listener from here
+      
+      document.getElementById('custom-dashboard')?.addEventListener('click', () => {
+        localStorage.setItem('sidebar-collapsed', '1');
+        location.href = '/dashboard';
+      });
+      document.getElementById('custom-quick-switcher')?.addEventListener('click', () => {
+        document.getElementById('quick-switcher-btn')?.click();
+      });
+      document.getElementById('custom-quick-note')?.addEventListener('click', async () => {
+        const r = await fetch('/note/quick', { method: 'POST' });
+        const data = await r.json();
+        if (data.ok && data.url) location.replace(data.url);
+      });
+      document.getElementById('custom-add-top')?.addEventListener('click', () => {
+        if (typeof window.__openNewNoteModal === 'function') window.__openNewNoteModal(window.ROOT_ID || null);
+      });
+      document.getElementById('custom-add-map')?.addEventListener('click', async () => {
+        const r = await fetch('/note/new-map', { method: 'POST' });
+        const data = await r.json();
+        if (data.ok && data.url) location.replace(data.url);
+      });
+      document.getElementById('custom-daily')?.addEventListener('click', () => {
+        location.href = '/daily-note?nofocus=1';
+      });
+    });
+  </script>
+
+{% else %}
+  <!-- ... This is where the normal note editor starts ... -->
+{% if current.id == root_id %}
+  {% set kids = sorted_tops %}
+{% else %}
+{% set kids = current.children|rejectattr('deleted_at')|list|sort_children(current.sort_by, current.sort_dir or 'asc') %}
+{% endif %}
+
+<div class="parent-bar" style="position: relative;">
+
+  <button type="button" class="icon-btn" id="go-to-parent-btn" title="Go to parent note">
+    <span class="material-symbols-rounded">arrow_upward</span>
+  </button>
+
+  {% if current.is_map_note %}
+  <button type="button" class="icon-btn" id="define-waypoints-btn" title="Define waypoints">
+    <span class="material-symbols-rounded">pin_drop</span>
+  </button>
+  <button type="button" class="icon-btn" id="import-gpx-btn" title="Import GPX track">
+    <span class="material-symbols-rounded">upload_file</span>
+  </button>
+  {% endif %}
+  
+  {% set is_task = current.properties and 'tasks' in (current.properties.get('category', '')|string|lower) %}
+  
+  {% if is_task %}
+    <!-- Add Subtask Button -->
+    <button type="button" class="icon-btn" id="add-subtask-btn" title="Add a new subtask (from Task template)">
+      <span class="material-symbols-rounded">playlist_add</span>
+    </button>
+    
+    <!-- Make Subtask Button -->
+    <button type="button" class="icon-btn" id="make-subtask-btn" title="Make this note a subtask of...">
+      <span class="material-symbols-rounded">input</span>
+    </button>
+  {% endif %}
+
+  <button type="button" class="parent-select" id="parent-picker-btn"
+          title="Move this note under another note">
+    <span class="material-symbols-rounded">folder_open</span>
+    <span id="parent-picker-label">
+      {% if current.parent %}{{ current.parent.title }}{% else %}Top level{% endif %}
+    </span>
+  </button>
+
+  <span class="parent-bar-spacer"></span>
+
+  <!-- Save indicator moved to the left of the icons -->
+  <span id="save-indicator" class="save-indicator"></span>
+
+  <!-- The icons are grouped tightly to the right -->
+<div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+    <button type="button" class="icon-btn {% if current.id in pinned_ids %}primary{% endif %}" 
+            id="pin-note-btn" 
+            title="{% if current.id in pinned_ids %}Unpin note{% else %}Pin note{% endif %}">
+      <span class="material-symbols-rounded">push_pin</span>
+    </button>
+
+    <button type="button" class="icon-btn" id="note-search-btn" title="Search in note">
+      <span class="material-symbols-rounded">search</span>
+    </button>
+  </div>
+
+  <div id="note-search-bar" class="note-search-bar hidden">
+    <span class="material-symbols-rounded search-icon">search</span>
+    <input type="text" id="note-search-input" placeholder="Find in note..." autocomplete="off">
+    <button type="button" class="icon-btn small" id="note-search-close">
+      <span class="material-symbols-rounded">close</span>
+    </button>
+  </div>
+</div>
+
+<div class="editor-main scroll-pane{% if not (current.content or '')|trim and kids %} empty-note{% endif %}" onscroll="handleMainScroll(this)">
+
+  <div class="title-wrap">
+    <input id="note-title" class="note-title"
+           type="text" value="{{ current.title }}" placeholder="Untitled"
+           autocomplete="off" spellcheck="false">
+  </div>
+
+  <div class="props-strip" id="props-strip">
+    <!-- Standalone Add button (visible only when empty) -->
+    <button type="button" class="add-prop-btn" id="add-prop-empty">
+      <span class="material-symbols-rounded">add</span> Add property
+    </button>
+    <div class="prop-table" id="prop-table"></div>
+  </div>
+
+  <div class="note-flow">
+    {% if current.is_map_note %}
+      <div class="map-view" id="map-container"></div>
+    {% else %}
+      <div class="editor-body" id="editor-body">
+        <div class="textarea-wrap" style="position: relative;">
+          <div id="note-content" data-initial="{{ current.content|e }}"></div>
+        </div>
+        <div class="preview-wrap">
+          <div class="preview-body" id="preview-body"></div>
+        </div>
+      </div>
+    {% endif %}
+
+    {% if kids %}
+      <div class="outline-wrap {% if outline_view_mode == 'card' %}outline-cards-view{% endif %}"
+           data-lazy-outline="{{ current.id }}">
+        <div class="outline-head-bar">
+          <span class="outline-head-label">Children ({{ kids|length }})</span>
+          <button type="button" class="icon-btn small" id="toggle-outline-fold"
+                  title="Fold / unfold children">
+            <span class="material-symbols-rounded" id="outline-fold-icon">unfold_more</span>
+          </button>
+        </div>
+        <div class="outline" id="outline-container"></div>
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="editor-tab-bar-wrap" data-pos="{{ tab_bar_position or 'top' }}">
+  <div id="editor-tab-bar" class="editor-tab-bar"></div>
+  <button type="button" class="icon-btn tab-add-btn" id="tab-add-btn" title="Open a note in a new tab">
+    <span class="material-symbols-rounded">add</span>
+  </button>
+</div>
+
+<div class="action-bar" id="action-bar">
+  <button class="icon-btn" id="action-bar-sidebar-toggle" title="Toggle sidebar">
+    <span class="material-symbols-rounded">menu</span>
+  </button>	
+	
+  <button class="icon-btn" id="open-dashboard-btn" title="Dashboard">
+    <span class="material-symbols-rounded">dashboard</span>
+  </button>	
+	
+  <button class="icon-btn" id="action-bar-quick-switcher" title="Quick switch">
+    <span class="material-symbols-rounded">search</span>
+  </button>
+
+  {% if not current.is_map_note %}
+  <button class="icon-btn" id="toggle-preview" title="Preview">
+    <span class="material-symbols-rounded">visibility</span>
+  </button>
+  {% endif %}
+
+  <button class="icon-btn" id="quick-note-btn" title="Quick Note">
+    <span class="material-symbols-rounded">bolt</span>
+  </button>
+
+  <button class="icon-btn" id="add-top-btn" title="New note">
+    <span class="material-symbols-rounded">add</span>
+  </button>
+
+  <button class="icon-btn" id="add-map-btn" title="New map note">
+    <span class="material-symbols-rounded">map</span>
+  </button>
+
+  {% if not current.is_map_note %}
+  <button class="icon-btn" id="quick-append" title="Append text to note">
+    <span class="material-symbols-rounded">add_comment</span>
+  </button>
+  {% endif %}
+
+  <label class="icon-btn" id="attach-btn" title="Attach file">
+    <span class="material-symbols-rounded">attach_file</span>
+    <input type="file" id="file-input" multiple hidden>
+  </label>
+  
+  <button class="icon-btn" id="add-location" title="Add current location">
+    <span class="material-symbols-rounded">location_on</span>
+  </button>  
+
+  <button class="icon-btn" id="open-daily-btn" title="Today's note">
+    <span class="material-symbols-rounded">auto_stories</span>
+  </button>
+
+  {% if not current.is_map_note %}
+  <button class="icon-btn" id="insert-timestamp" title="Insert date / time">
+    <span class="material-symbols-rounded">today</span>
+  </button>
+  <div class="timestamp-popover" id="timestamp-popover" hidden>
+    <button type="button" class="fsp-item" data-ts="date" title="Date">
+      <span class="material-symbols-rounded">event</span>
+    </button>
+    <button type="button" class="fsp-item" data-ts="time" title="Time">
+      <span class="material-symbols-rounded">schedule</span>
+    </button>
+    <button type="button" class="fsp-item" data-ts="datetime" title="Date &amp; time">
+      <span class="material-symbols-rounded">today</span>
+    </button>
+  </div>
+  {% endif %}
+
+  <button type="button" class="icon-btn due-btn" id="due-btn" title="Set / clear reminder" style="display: none;">
+    <span class="material-symbols-rounded" id="due-btn-icon">alarm_add</span>
+  </button>
+  
+  <input id="note-due-date" type="date" style="position: fixed; opacity: 0; pointer-events: none; width: 0; height: 0;">
+  <input id="note-due-time" type="time" style="position: fixed; opacity: 0; pointer-events: none; width: 0; height: 0;">
+  <input id="note-due" type="hidden" data-utc="{{ current.due_at.isoformat() + 'Z' if current.due_at else '' }}">
+
+  <button class="icon-btn" id="duplicate-btn" title="Duplicate note">
+    <span class="material-symbols-rounded">content_copy</span>
+  </button>
+
+  {% if not current.is_map_note %}
+  <button class="icon-btn {% if current.is_template %}primary{% endif %}" id="toggle-template"
+          title="{{ 'Unmark as template' if current.is_template else 'Mark as template' }}">
+    <span class="material-symbols-rounded">{{ 'bookmark_remove' if current.is_template else 'bookmark' }}</span>
+  </button>
+  {% endif %}
+
+  {% if not current.is_map_note and current.is_template %}
+  <button class="icon-btn {% if current.blank_title_on_use %}primary disabled-title{% endif %}" id="toggle-blank-title"
+          title="{{ 'Blank title on use' if current.blank_title_on_use else 'Use template title on use' }}">
+    <span class="material-symbols-rounded">format_color_text</span>
+  </button>
+  {% endif %}
+
+  <button class="icon-btn" id="toggle-drawers" title="Backlinks &amp; attachments">
+    <span class="material-symbols-rounded">link</span>
+  </button>
+  
+  {% if not current.is_map_note %}
+  <button class="icon-btn" id="undo-btn" title="Undo (Ctrl+Z)">
+    <span class="material-symbols-rounded">undo</span>
+  </button>
+  {% endif %}
+
+  {% if not current.is_map_note %}
+  <button class="icon-btn" id="redo-btn" title="Redo (Ctrl+Shift+Z)">
+    <span class="material-symbols-rounded">redo</span>
+  </button>
+  {% endif %}
+
+  <button class="icon-btn primary" id="save-btn" title="Save (Ctrl+S)">
+    <span class="material-symbols-rounded">save</span>
+  </button>  
+
+  {% if not root_id or current.id != root_id %}
+  <button class="icon-btn danger" id="delete-btn" title="Delete note">
+    <span class="material-symbols-rounded">delete</span>
+  </button>
+  {% endif %}
+</div>
+
+<div class="drawer-stack" id="drawer-stack">
+  <div class="drawer-backdrop" id="drawer-backdrop"></div>
+
+  <div class="drawer-grip" id="drawer-close" title="Close">
+    <span class="material-symbols-rounded">close</span>
+  </div>
+
+  <details class="drawer" id="metadata-drawer">
+    <summary>
+      <span class="material-symbols-rounded">info</span>
+      Note Info
+    </summary>
+    <div class="drawer-body">
+      <p style="margin: 4px 0; font-size: 14px; color: var(--text-dim);">
+        <strong>Created:</strong> <span id="meta-created"></span>
+      </p>
+      <p style="margin: 4px 0; font-size: 14px; color: var(--text-dim);">
+        <strong>Modified:</strong> <span id="meta-updated"></span>
+      </p>
+    </div>
+  </details>
+
+  <details class="drawer" id="backlinks-drawer">
+    <summary>
+      <span class="material-symbols-rounded">link</span>
+      Backlinks ({{ current.inbound|length }})
+    </summary>
+    <div class="drawer-body">
+      {% if current.inbound %}
+        <ul class="backlinks-list">
+          {% for src in current.inbound %}
+            <li>
+              <a href="{{ url_for('index', note=src.id) }}">
+                <span class="material-symbols-rounded">description</span>
+                {{ src.title }}
+              </a>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="drawer-empty">No notes link here yet.</p>
+      {% endif %}
+    </div>
+  </details>
+
+  <details class="drawer" id="attach-drawer">
+    <summary>
+      <span class="material-symbols-rounded">attach_file</span>
+      Attachments ({{ current.attachments|length }})
+    </summary>
+    <div class="drawer-body">
+      <div class="attachment-grid" id="attachment-grid">
+        {% for a in current.attachments %}
+          <div class="att" data-id="{{ a.id }}">
+            {% if a.is_image %}
+              <img src="{{ url_for('uploaded_file', filename=a.filename) }}"
+                   alt="{{ a.original_name }}">
+            {% else %}
+              <a href="{{ url_for('uploaded_file', filename=a.filename) }}"
+                 target="_blank">
+                <span class="material-symbols-rounded">draft</span>
+                {{ a.original_name }}
+              </a>
+            {% endif %}
+            <button class="att-rename"
+                    data-id="{{ a.id }}"
+                    data-current="{{ a.original_name }}"
+                    title="Rename">
+              <span class="material-symbols-rounded">edit</span>
+            </button>            
+            <button class="att-del" data-id="{{ a.id }}" data-filename="{{ a.filename }}" title="Remove">
+              <span class="material-symbols-rounded">close</span>
+            </button>
+          </div>
+        {% endfor %}
+      </div>
+      {% if not current.attachments %}
+        <p class="drawer-empty">No attachments yet.</p>
+      {% endif %}
+    </div>
+  </details>
+</div>
+
+<div id="due-time-prompt">
+  <button type="button" id="due-time-btn" class="btn primary">
+    <span class="material-symbols-rounded">schedule</span>
+    Set time
+  </button>
+  <button type="button" id="due-time-ok" class="btn">
+    OK (09:00)
+  </button>
+</div>
+
+<datalist id="prop-values"></datalist>
+<datalist id="prop-keys"></datalist>
+
+<script>
+  window.NOTE_ID = {{ current.id }};
+  window.NOTE_TITLE = {{ (current.title or 'Untitled')|tojson }};
+  window.NOTE_PROPS = {{ note_properties_dict|default({})|tojson }};
+  window.IS_MAP_NOTE = {{ 'true' if current.is_map_note else 'false' }};
+  {% if current.is_map_note %}
+    window.MAP_DEFAULT = {
+      lat:  {{ Setting.get('map_default_lat', '-23.2208') }},
+      lng:  {{ Setting.get('map_default_lng', '-44.7136') }},
+      zoom: {{ Setting.get('map_default_zoom', '13') }},
+    };
+    window.MAP_GPX_URLS = [
+      {% for a in current.attachments if a.original_name.lower().endswith('.gpx') %}
+        {{ url_for('uploaded_file', filename=a.filename)|tojson }}{{ ',' if not loop.last }}
+      {% endfor %}
+    ];
+    window.MAP_GPX_ATTACHMENTS = [
+      {% for a in current.attachments if a.original_name.lower().endswith('.gpx') %}
+        {
+          id: {{ a.id }},
+          url: {{ url_for('uploaded_file', filename=a.filename)|tojson }},
+          original_name: {{ a.original_name|tojson }}
+        }{{ ',' if not loop.last }}
+      {% endfor %}
+    ];
+  {% endif %}
+  window.NOTE_UPDATED_AT = {{ (note_updated_at or '')|tojson }};
+  window.NOTE_CREATED_AT = {{ (current.created_at.isoformat() + 'Z')|tojson if current.created_at else 'null' }}; 
+  window.NOTE_LINKS = {{ current.outbound|map(attribute='id')|list|tojson }};
+  window.IS_TEMPLATE = {{ 'true' if current.is_template else 'false' }};
+  window.HAS_CHILDREN = {{ 'true' if current.children else 'false' }};
+  window.SEARCH_QUERY = {{ search_query|default('', true)|tojson }};
+  window.NOTE_DUE_AT = {{ (current.due_at.isoformat() + 'Z')|tojson if current.due_at else 'null' }};
+  window.INITIAL_VIEW_MODE = {{ (view_mode or 'list')|tojson }};
+  window.OUTLINE_VIEW_MODE = {{ (outline_view_mode or 'card')|tojson }};
+  
+  // NEW: Expose data for the outline custom folders
+  window.PINNED_NOTES_DATA = [
+    {% for pn in pinned_notes %}
+      { id: {{ pn.id }}, title: {{ pn.title|tojson }}, has_children: {{ 'true' if pn.children else 'false' }}, content: '' }{{ ',' if not loop.last }}
+    {% endfor %}
+  ];
+  
+  window.SAVED_SEARCHES_DATA = [
+    {% for s in saved_searches %}
+      { id: {{ s.id }}, title: {{ s.name|tojson }}, is_search: true, has_children: false, content: '' }{{ ',' if not loop.last }}
+    {% endfor %}
+  ];
+</script>
+
+{% endif %}
+
+{% else %}
+
+<div class="editor-main" style="flex: 1; align-items:center;justify-content:center;padding:24px; display:flex; position: relative; padding-bottom: 60px;">
+  <div class="empty-state-card">
+    <span class="material-symbols-rounded empty-state-icon">description</span>
+    <h2>No note selected</h2>
+    <p>Select a note from the sidebar, or create a new one to get started.</p>
+    <button type="button" class="btn primary" onclick="const qsBtn = document.getElementById('quick-switcher-btn'); if (qsBtn) qsBtn.click();">
+      <span class="material-symbols-rounded">search</span>
+      Create or open note
+    </button>
+  </div>
+</div>
+
+<!-- Bottom Action Bar for Empty page -->
+<div class="action-bar" id="empty-action-bar" style="display: flex; justify-content: space-around; padding: 1px 16px; overflow: visible; flex-shrink: 0;">
+  <button class="icon-btn" id="empty-action-bar-sidebar-toggle" title="Toggle sidebar">
+    <span class="material-symbols-rounded">menu</span>
+  </button>
+
+  <button class="icon-btn" id="empty-dashboard" title="Dashboard">
+    <span class="material-symbols-rounded">dashboard</span>
+  </button>
+
+  <button class="icon-btn" id="empty-quick-switcher" title="Quick switch">
+    <span class="material-symbols-rounded">search</span>
+  </button>
+
+  <button class="icon-btn" id="empty-add-top" title="New note">
+    <span class="material-symbols-rounded">add</span>
+  </button>
+
+  <button class="icon-btn" id="empty-add-map" title="New map note">
+    <span class="material-symbols-rounded">map</span>
+  </button>
+
+  <button class="icon-btn" id="empty-quick-note" title="Quick Note">
+    <span class="material-symbols-rounded">bolt</span>
+  </button>
+
+  <button class="icon-btn" id="empty-open-daily" title="Today's note">
+    <span class="material-symbols-rounded">auto_stories</span>
+  </button>
+</div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('empty-quick-switcher')?.addEventListener('click', () => {
+      document.getElementById('quick-switcher-btn')?.click();
+    });
+    document.getElementById('empty-add-top')?.addEventListener('click', () => {
+      if (typeof window.__openNewNoteModal === 'function') {
+        window.__openNewNoteModal(window.ROOT_ID || null);
+      }
+    });
+    document.getElementById('empty-add-map')?.addEventListener('click', async () => {
+      try {
+        const r = await fetch('/note/new-map', { method: 'POST' });
+        const data = await r.json();
+        if (data.ok && data.url) {
+          localStorage.setItem('sidebar-collapsed', '1');
+          window.instantNavigate?.();
+          location.replace(data.url);
+        }
+      } catch (err) { alert('Failed: ' + err.message); }
+    });
+    document.getElementById('empty-quick-note')?.addEventListener('click', async () => {
+      try {
+        const r = await fetch('/note/quick', { method: 'POST' });
+        const data = await r.json();
+        if (data.ok && data.url) {
+          localStorage.setItem('sidebar-collapsed', '1');
+          window.instantNavigate?.();
+          location.replace(data.url);
+        }
+      } catch (err) { alert('Failed: ' + err.message); }
+    });
+    document.getElementById('empty-open-daily')?.addEventListener('click', () => {
+      location.href = '/daily-note?nofocus=1';
+    });
+    document.getElementById('empty-dashboard')?.addEventListener('click', () => {
+      localStorage.setItem('sidebar-collapsed', '1');
+      location.href = '/dashboard';
+    });
+  });
+</script>
+
+{% endif %}
+
+{% endblock %}

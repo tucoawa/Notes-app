@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="color-scheme" content="dark">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <title>{% block title %}Notes{% endblock %}</title>
+
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+
+<script>
+  window.ALL_PROP_VALUES = {{ all_prop_values|default({})|tojson }};
+  window.ROOT_ID = {{ root_id if root_id is defined and root_id else 'null' }};
+
+  // Simple markdown renderer — safe fallback that always works
+  window.mdToHtml = function(md) {
+    if (!md) return '';
+    if (!window.marked) {
+      return String(md).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    }
+    const withImages = md.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, alt, url) =>
+      `<img src="${url}" alt="${alt || ''}" style="max-width: 100%; border-radius: 8px; display: block; margin: 0.9em 0;" />`
+    );
+    const withWiki = withImages.replace(/(?:@)?\[\[([^\]]+)\]\]/g, (_, title) =>
+      `<a href="wikilink:${encodeURIComponent(title)}" class="wikilink">${title}</a>`
+    );
+    return window.marked.parse(withWiki, { breaks: true, gfm: true });
+  };
+</script>
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ config.ASSET_VERSION }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/highlight-github-dark.min.css') }}?v={{ config.ASSET_VERSION }}">
+  <link rel="manifest" href="/manifest.json">
+  <script src="{{ url_for('static', filename='vendor/marked.min.js') }}?v={{ config.ASSET_VERSION }}"></script>
+  
+  <script type="importmap">
+  {
+    "imports": {
+      "codemirror-bundle": "/static/vendor/cm/codemirror-bundle.js"
+    }
+  }
+  </script>
+
+  {% if current and current.is_map_note %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/leaflet/leaflet.css') }}?v={{ config.ASSET_VERSION }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/leaflet-locate/leaflet.locate.css') }}?v={{ config.ASSET_VERSION }}">
+  <script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}?v={{ config.ASSET_VERSION }}"></script>
+  <script src="{{ url_for('static', filename='vendor/leaflet-gpx/leaflet-gpx.js') }}?v={{ config.ASSET_VERSION }}"></script>
+  <script src="{{ url_for('static', filename='vendor/leaflet-locate/leaflet.locate.js') }}?v={{ config.ASSET_VERSION }}"></script>
+  {% endif %}
+
+  <script>
+    if (localStorage.getItem('sidebar-collapsed') !== '0') {
+      document.documentElement.classList.add('collapsed');
+    }
+  </script>
+</head>
+<body class="view-mode-cards">
+  <div class="layout">
+    {% if sidebar_html %}
+      {{ sidebar_html|safe }}
+    {% else %}
+      {% include '_sidebar.html' %}
+    {% endif %}
+    <main class="editor">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <div class="modal" id="new-note-modal">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-sheet">
+      <div class="modal-head">
+        <span>New note</span>
+        <button class="icon-btn" data-close>
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div class="modal-body"
+           data-template-ids='{{ templates|default([])|map(attribute="id")|list|tojson }}'
+           data-template-titles='{{ templates|default([])|map(attribute="title")|list|tojson }}'></div>
+    </div>
+  </div>
+
+  <div class="modal" id="quick-switcher-modal">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-sheet">
+      <div class="modal-head">
+        <input type="text" id="qs-input" class="qs-input" placeholder="Jump to note…"
+               autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+        <button class="icon-btn" data-close>
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div class="modal-body" id="qs-results"></div>
+    </div>
+  </div>
+
+  <div class="modal" id="parent-picker-modal">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-sheet">
+      <div class="modal-head" style="border-bottom: none; padding-bottom: 0;">
+        <span style="font-size: 13px; color: var(--text-dim); display: flex; align-items: center; gap: 4px;">
+          Current parent: 
+          <strong id="pp-current-parent" style="color: var(--text);"></strong>
+        </span>
+        <button class="icon-btn" data-close>
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div class="modal-head">
+        <input type="text" id="pp-input" class="qs-input" placeholder="Move note to…"
+               autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+      </div>
+      <div class="modal-body" id="pp-results"></div>
+    </div>
+  </div>
+  
+  <div class="modal" id="note-move-modal">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-sheet">
+      <div class="modal-head">
+        <input type="text" id="nm-input" class="qs-input" placeholder="Move note to…"
+               autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+        <button class="icon-btn" data-close>
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div class="modal-body" id="nm-results"></div>
+    </div>
+  </div>
+  
+  <div id="append-modal" class="modal">
+    <div class="modal-backdrop" onclick="document.getElementById('append-modal').classList.remove('open'); window.__appendResolve(null);"></div>
+    <div class="modal-sheet" style="max-width: 400px; margin: 20px;">
+      <div class="modal-head">
+        <span>Append text</span>
+        <button type="button" class="icon-btn" onclick="document.getElementById('append-modal').classList.remove('open'); window.__appendResolve(null);">
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div style="padding: 16px;">
+        <textarea id="append-text-input" class="settings-input" rows="4" style="margin-bottom: 12px; resize: vertical;"></textarea>
+        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+          <button type="button" class="btn" onclick="document.getElementById('append-modal').classList.remove('open'); window.__appendResolve(null);">Cancel</button>
+          <button type="button" class="btn btn-primary" onclick="document.getElementById('append-modal').classList.remove('open'); window.__appendResolve(document.getElementById('append-text-input').value);">Append</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="dash-append-modal" class="modal">
+    <div class="modal-backdrop" onclick="document.getElementById('dash-append-modal').classList.remove('open'); window.__dashAppendResolve && window.__dashAppendResolve(null);"></div>
+    <div class="modal-sheet" style="max-width: 400px; margin: 20px;">
+      <div class="modal-head">
+        <span>Append to today's note</span>
+        <button type="button" class="icon-btn" onclick="document.getElementById('dash-append-modal').classList.remove('open'); window.__dashAppendResolve && window.__dashAppendResolve(null);">
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div style="padding: 16px;">
+        <textarea id="dash-append-text" class="settings-input" rows="4" style="margin-bottom: 12px; resize: vertical;"></textarea>
+        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+          <button type="button" class="btn" onclick="document.getElementById('dash-append-modal').classList.remove('open'); window.__dashAppendResolve && window.__dashAppendResolve(null);">Cancel</button>
+          <button type="button" class="btn btn-primary" onclick="const v = document.getElementById('dash-append-text').value; document.getElementById('dash-append-text').blur(); document.getElementById('dash-append-modal').classList.remove('open'); window.__dashAppendResolve && window.__dashAppendResolve(v);">Append</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <div id="props-edit-modal" class="modal">
+    <div class="modal-backdrop" onclick="document.getElementById('props-edit-modal').classList.remove('open'); window.__propsEditResolve && window.__propsEditResolve(null);"></div>
+    <div class="modal-sheet" style="max-width: 400px; margin: 20px;">
+      <div class="modal-head">
+        <span id="props-edit-title">Edit properties</span>
+        <button type="button" class="icon-btn" onclick="document.getElementById('props-edit-modal').classList.remove('open'); window.__propsEditResolve && window.__propsEditResolve(null);">
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+        <label class="settings-label" style="margin: 0;">
+          Due
+          <input type="date" id="props-edit-due" class="settings-input">
+        </label>
+        <label class="settings-label" style="margin: 0;">
+          Priority
+          <input type="text" id="props-edit-priority" class="settings-input" placeholder="e.g. 1">
+        </label>
+        <label class="settings-label" style="margin: 0;">
+          Urgency
+          <input type="text" id="props-edit-urgency" class="settings-input" placeholder="e.g. 1">
+        </label>
+        <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px;">
+          <button type="button" class="btn" onclick="document.getElementById('props-edit-modal').classList.remove('open'); window.__propsEditResolve && window.__propsEditResolve(null);">Cancel</button>
+          <button type="button" class="btn btn-primary" id="props-edit-save">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>  
+  
+  <!-- Calendar Modal -->
+  <div class="modal" id="calendar-modal">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-sheet" style="max-width: 340px;">
+      <div class="modal-head">
+        <button class="icon-btn small" id="cal-prev" title="Previous month">
+          <span class="material-symbols-rounded">chevron_left</span>
+        </button>
+        <span id="cal-month-label" style="flex: 1; text-align: center;">Month Year</span>
+        <button class="icon-btn small" id="cal-next" title="Next month">
+          <span class="material-symbols-rounded">chevron_right</span>
+        </button>
+        <button class="icon-btn" data-close>
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div class="modal-body" style="padding: 16px;">
+        <div class="calendar-grid" id="calendar-grid"></div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Rename Note Modal -->
+  <div class="modal" id="rename-modal">
+    <div class="modal-backdrop" onclick="document.getElementById('rename-modal').classList.remove('open'); window.__renameResolve(null);"></div>
+    <div class="modal-sheet" style="max-width: 400px;">
+      <div class="modal-head">
+        <span>Rename note</span>
+        <button class="icon-btn" onclick="document.getElementById('rename-modal').classList.remove('open'); window.__renameResolve(null);">
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div class="modal-body" style="padding: 16px;">
+        <input type="text" id="rename-input" class="settings-input" style="width: 100%; margin-bottom: 12px;" autocomplete="off" spellcheck="false">
+        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+          <button type="button" class="btn" onclick="document.getElementById('rename-modal').classList.remove('open'); window.__renameResolve(null);">Cancel</button>
+          <button type="button" class="btn btn-primary" id="rename-confirm">Rename</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Zoom In Modal -->
+  <div id="zoom-block-modal" class="modal">
+    <div class="modal-backdrop" onclick="document.getElementById('zoom-block-modal').classList.remove('open')"></div>
+    <div class="modal-sheet" style="max-width: 640px; height: 80vh; display: flex; flex-direction: column; background: var(--bg);">
+      <div class="modal-head" style="justify-content: space-between; border-bottom: 1px solid var(--border-soft); padding: 8px 12px;">
+        <span style="font-size: 14px; color: var(--text-dim);">Edit block</span>
+        <button type="button" class="icon-btn" onclick="document.getElementById('zoom-block-modal').classList.remove('open')">
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+      <div class="modal-body" style="flex: 1; display: flex; flex-direction: column; padding: 0; min-height: 0;">
+      <input type="text" id="zoom-block-title" class="zoom-block-title-input" placeholder="Note title" autocomplete="off" spellcheck="false">
+        <div id="zoom-block-editor" style="flex: 1; overflow-y: auto; background: var(--bg); padding: 14px; min-height: 0;"></div>
+        <div class="zoom-block-action-bar">
+          <button type="button" class="icon-btn" id="zoom-block-attach-btn" title="Attach file">
+            <span class="material-symbols-rounded">attach_file</span>
+          </button>
+          <input type="file" id="zoom-block-file-input" hidden>
+          <button type="button" class="icon-btn" id="zoom-block-timestamp-btn" title="Insert date / time">
+            <span class="material-symbols-rounded">today</span>
+          </button>
+          <div class="timestamp-popover" id="zoom-block-ts-popover" hidden>
+            <button type="button" class="fsp-item" data-ts="date" title="Date">
+              <span class="material-symbols-rounded">event</span>
+            </button>
+            <button type="button" class="fsp-item" data-ts="time" title="Time">
+              <span class="material-symbols-rounded">schedule</span>
+            </button>
+            <button type="button" class="fsp-item" data-ts="datetime" title="Date &amp; time">
+              <span class="material-symbols-rounded">today</span>
+            </button>
+          </div>
+          <span class="action-spacer"></span>
+          <button type="button" class="btn hide-on-mobile" onclick="document.getElementById('zoom-block-modal').classList.remove('open')">Cancel</button>
+          <button type="button" class="btn" id="zoom-block-save-open" style="display: none; margin-right: 6px;">Save & Open</button>
+          <button type="button" class="btn primary" id="zoom-block-save">Save</button>
+        </div>
+      </div>
+    </div>
+  </div> 
+
+  <script src="{{ url_for('static', filename='vendor/highlight.min.js') }}?v={{ config.ASSET_VERSION }}"></script>
+  <script type="module" src="{{ url_for('static', filename='app.js') }}?v={{ config.ASSET_VERSION }}"></script>
+
+  {% if current and current.is_map_note %}
+  <script src="{{ url_for('static', filename='map.js') }}?v={{ config.ASSET_VERSION }}"></script>
+  {% endif %}
+
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js', { scope: '/' })
+          .then((reg) => console.log('[sw] registered', reg.scope))
+          .catch((err) => console.warn('[sw] registration failed', err));
+      });
+    }
+  </script>
+
+  <script>
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted) {
+        window.location.reload();
+      }
+    });
+  </script>
+  
+</body>
+</html>
