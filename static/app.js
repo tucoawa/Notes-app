@@ -1,0 +1,12190 @@
+import { createEditor } from './editor.js';
+import * as CM from 'codemirror-bundle';
+window.__createEditor = createEditor;
+
+const { EditorView } = CM;
+
+if ('scrollRestoration' in history) {
+  history.scrollRestoration = 'manual';
+}
+
+// ============================================================
+// Property chips — tappable to edit due/priority/urgency
+// ============================================================
+window.__openPropsEditor = function(noteId, noteTitle, props) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('props-edit-modal');
+    if (!modal) { resolve(null); return; }
+    const titleEl = document.getElementById('props-edit-title');
+    const dueEl = document.getElementById('props-edit-due');
+    const prioEl = document.getElementById('props-edit-priority');
+    const urgEl = document.getElementById('props-edit-urgency');
+    const saveBtn = document.getElementById('props-edit-save');
+
+    titleEl.textContent = 'Edit: ' + (noteTitle || 'note');
+    dueEl.value = String(props.due || '').trim();
+    prioEl.value = String(props.priority || '').trim();
+    urgEl.value = String(props.urgency || '').trim();
+
+    modal.classList.add('open');
+    setTimeout(() => { dueEl.focus(); }, 60);
+
+    const finish = (result) => {
+      modal.classList.remove('open');
+      window.__propsEditResolve = null;
+      saveBtn.onclick = null;
+      resolve(result);
+    };
+    window.__propsEditResolve = finish;
+
+    saveBtn.onclick = () => {
+      const newDue = dueEl.value.trim();
+      const newPrio = prioEl.value.trim();
+      const newUrg = urgEl.value.trim();
+      dueEl.blur(); prioEl.blur(); urgEl.blur();
+      finish({
+        noteId: noteId,
+        due: newDue,
+        priority: newPrio,
+        urgency: newUrg,
+      });
+    };
+  });
+};
+
+// Wire a click handler on any chip
+document.addEventListener('click', async (e) => {
+  const chip = e.target.closest('.prop-chip-tappable');
+  if (!chip) return;
+  e.preventDefault();
+  e.stopPropagation();
+  e.stopImmediatePropagation();
+
+  const noteId = chip.dataset.noteId;
+  const noteTitle = chip.dataset.noteTitle || '';
+  const currentProps = {
+    due: chip.dataset.due || '',
+    priority: chip.dataset.priority || '',
+    urgency: chip.dataset.urgency || '',
+  };
+  if (!noteId) return;
+
+  const result = await window.__openPropsEditor(noteId, noteTitle, currentProps);
+  if (!result) return;
+
+  const updates = {};
+  if (String(currentProps.due) !== String(result.due)) updates.due = result.due;
+  if (String(currentProps.priority) !== String(result.priority)) updates.priority = result.priority;
+  if (String(currentProps.urgency) !== String(result.urgency)) updates.urgency = result.urgency;
+  if (!Object.keys(updates).length) return;
+
+  try {
+    for (const [key, value] of Object.entries(updates)) {
+      const res = await fetch(`/api/note/${noteId}/update-property`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, value }),
+      });
+      if (!res.ok) throw new Error(`Failed to update ${key}`);
+    }
+
+    document.querySelectorAll(`.prop-chip-tappable[data-note-id="${noteId}"]`).forEach(el => {
+      const kind = el.dataset.kind;
+      const newVal = result[kind] || '';
+      el.dataset[kind] = newVal;
+      const labelEl = el.querySelector('.chip-label');
+      if (labelEl) labelEl.textContent = newVal || '—';
+    });
+    // --- NEW: Smart Dashboard Refresh ---
+    if (window.location.pathname === '/dashboard') {
+      // Fetch the updated dashboard in the background
+      fetch(window.location.href, { cache: 'no-store' })
+        .then(r => r.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(html, 'text/html');
+          
+          // 1. Find the old search results and the new search results
+          const oldResultsContainer = document.querySelector('.results-list');
+          const newResultsContainer = doc.querySelector('.results-list');
+
+          // 2. Find the old Todo list and the new Todo list
+          const oldTodoList = document.getElementById('dashboard-todo-list');
+          const newTodoList = doc.getElementById('dashboard-todo-list');
+
+          // 3. Replace the contents (if they exist on the page)
+          if (oldResultsContainer && newResultsContainer) {
+            oldResultsContainer.innerHTML = newResultsContainer.innerHTML;
+          }
+          if (oldTodoList && newTodoList) {
+            oldTodoList.innerHTML = newTodoList.innerHTML;
+          }
+
+          // 4. Refresh the sidebar tree silently so the chip colors update there too
+          if (typeof window.__refreshTree === 'function') {
+            window.__refreshTree();
+          }
+        })
+        .catch(err => console.error('Dashboard refresh failed', err));
+    }
+  } catch (err) {
+    alert('Failed: ' + err.message);
+  }
+}, true);
+
+window.addEventListener('error', (e) => {
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#600;color:#fff;padding:6px;font:12px monospace;z-index:2147483647;white-space:pre-wrap;';
+  el.textContent = 'JS ERR: ' + e.message + ' @ line ' + e.lineno;
+  document.body.appendChild(el);
+});
+
+// --- Scroll handler for hiding top bars ---
+let lastScrollPos = 0;
+window.handleMainScroll = function(el) {
+  if (!window.matchMedia('(max-width: 720px)').matches) return;
+  
+  const currentScroll = el.scrollTop;
+  if (currentScroll > lastScrollPos && currentScroll > 30) {
+    document.body.classList.add('hide-top-bars');
+  } else if (currentScroll < lastScrollPos || currentScroll < 20) {
+    document.body.classList.remove('hide-top-bars');
+  }
+  lastScrollPos = currentScroll;
+};
+
+window.__openRenameModal = function(currentTitle) {
+  return new Promise((resolve) => {
+    window.__renameResolve = resolve;
+    const modal = document.getElementById('rename-modal');
+    const input = document.getElementById('rename-input');
+    const confirmBtn = document.getElementById('rename-confirm');
+    
+    input.value = currentTitle || '';
+    modal.classList.add('open');
+    
+    setTimeout(() => {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }, 100);
+
+    // Handle Enter key
+    const handleKey = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        confirmBtn.click();
+      }
+    };
+    input.addEventListener('keydown', handleKey);
+    
+    // Handle Confirm click
+    confirmBtn.onclick = () => {
+      const val = input.value.trim();
+      modal.classList.remove('open');
+      input.removeEventListener('keydown', handleKey);
+      // Close the keyboard
+      input.blur();
+      resolve(val || null);
+    };
+  });
+};
+
+window.__openAppendModal = function() {
+  return new Promise((resolve) => {
+    window.__appendResolve = resolve;
+    const modal = document.getElementById('append-modal');
+    const input = document.getElementById('append-text-input');
+    
+    modal.classList.add('open');
+    input.value = '';
+    // Focus the input immediately so the keyboard opens
+    setTimeout(() => input.focus(), 100);
+  });
+};
+
+function removeNoteFromTabs(noteId) {
+  try {
+    let tabs = JSON.parse(localStorage.getItem('open-tabs') || '[]');
+    
+    // Remove the note from each tab's stack
+    tabs = tabs.map(t => {
+      const stack = Array.isArray(t.stack) ? t.stack : [t.id];
+      const newStack = stack.filter(id => String(id) !== String(noteId));
+      const newId = newStack.length > 0 ? newStack[newStack.length - 1] : null;
+      return { ...t, id: newId, stack: newStack };
+    });
+    
+    // Drop tabs whose stack became empty
+    tabs = tabs.filter(t => t.stack.length > 0);
+    
+    localStorage.setItem('open-tabs', JSON.stringify(tabs));
+  } catch (e) {}
+}
+
+function removeNoteFromRecent(noteId) {
+  try {
+    const RECENT_KEY = 'recent-notes';
+    let recents = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+    recents = recents.filter(r => String(r.id) !== String(noteId));
+    localStorage.setItem(RECENT_KEY, JSON.stringify(recents));
+  } catch (e) {}
+}
+
+function attachAutocomplete(inputEl, getItems, onPick) {
+  let popup = null;
+  let items = [];
+  let index = 0;
+  let isTappingOutside = false;
+
+  function close() {
+    if (popup) {
+      popup.remove();
+      popup = null;
+    }
+    items = [];
+    index = 0;
+  }
+
+  function position() {
+    if (!popup || !inputEl.isConnected) return;
+    const r = inputEl.getBoundingClientRect();
+    const popupH = popup.offsetHeight || 200;
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+    let top = r.bottom + 4;
+    let left = r.left;
+    let width = Math.max(r.width, 200);
+    if (top + popupH > vh - 8) {
+      top = Math.max(8, r.top - popupH - 4);
+    }
+    if (left + width > vw - 8) {
+      width = vw - left - 8;
+    }
+    popup.style.left = left + 'px';
+    popup.style.top = top + 'px';
+    popup.style.width = width + 'px';
+  }
+
+  function render() {
+    if (!popup) return;
+    if (!items.length) {
+      popup.innerHTML = '';
+      position();
+      return;
+    }
+    popup.innerHTML = items.map((v, i) =>
+      `<div class="ac-item ${i === index ? 'sel' : ''}" data-idx="${i}">${v}</div>`
+    ).join('');
+    popup.querySelectorAll('.ac-item').forEach(el => {
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const i = Number(el.dataset.idx);
+        pick(i);
+      });
+    });
+    position();
+  }
+
+  function pick(i) {
+    if (i < 0 || i >= items.length) return;
+    inputEl.value = items[i];
+    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+    inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+    close();
+    if (typeof onPick === 'function') onPick();
+  }
+
+  function open() {
+    if (popup) return;
+    const all = getItems() || [];
+    if (!all.length) return;
+
+    popup = document.createElement('div');
+    popup.className = 'ac-popup';
+    document.body.appendChild(popup);
+
+    const current = inputEl.value.trim().toLowerCase();
+    items = current
+      ? all.filter(v => String(v).toLowerCase().includes(current))
+      : all.slice();
+    index = 0;
+    render();
+  }
+
+  // 1. Catch the tap BEFORE the input blurs
+  document.addEventListener('pointerdown', (e) => {
+    if (popup && !popup.contains(e.target) && e.target !== inputEl) {
+      // If they tapped the preview, stop it from entering edit mode
+      if (e.target.closest('.preview-body') || e.target.closest('.preview-wrap')) {
+        isTappingOutside = true;
+      }
+      close();
+    }
+  }, true);
+
+  inputEl.addEventListener('focus', open);
+  inputEl.addEventListener('click', open);
+  
+  inputEl.addEventListener('input', () => {
+    if (!popup) { open(); return; }
+    const current = inputEl.value.trim().toLowerCase();
+    const all = getItems() || [];
+    items = current
+      ? all.filter(v => String(v).toLowerCase().includes(current))
+      : all.slice();
+    index = 0;
+    render();
+  });
+
+  // 2. If they tapped the preview to close the popup, swallow the next click
+  document.addEventListener('click', (e) => {
+    if (isTappingOutside) {
+      if (e.target.closest('.preview-body') || e.target.closest('.preview-wrap')) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      isTappingOutside = false;
+    }
+  }, true);
+
+  inputEl.addEventListener('keydown', (e) => {
+    if (!popup) return;
+    if (e.key === 'ArrowDown') {
+      index = Math.min(index + 1, items.length - 1);
+      render();
+      e.preventDefault();
+    } else if (e.key === 'ArrowUp') {
+      index = Math.max(index - 1, 0);
+      render();
+      e.preventDefault();
+    } else if (e.key === 'Enter' || e.keyCode === 13) {
+      if (items[index]) {
+        pick(index);
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    } else if (e.key === 'Escape') {
+      close();
+    }
+  });
+}
+/* ============================================================
+   Mid-session refresh of the advanced-search dropdowns
+   ============================================================ */
+async function refreshAdvancedSearchDropdowns() {
+  console.log('[refresh DEBUG] starting');
+  let data;
+  try {
+    const res = await fetch('/api/prop-values', { cache: 'no-store' });
+    console.log('[refresh DEBUG] fetch status:', res.status);
+    if (!res.ok) {
+      console.log('[refresh DEBUG] not ok, returning');
+      return;
+    }
+    data = await res.json();
+    console.log('[refresh DEBUG] data keys:', Object.keys(data).slice(0, 20), 'has_foo:', 'foo' in data);
+  } catch (e) {
+    console.log('[refresh DEBUG] fetch error:', e);
+    return;
+  }
+
+  // 1. Update the global property-values map (used by the in-note chip
+  //    autocomplete and the advanced-search autocomplete attach()s).
+  window.ALL_PROP_VALUES = data;
+
+  // 2. Rebuild the <datalist id="prop-values-all"> used by the table-view
+  //    inputs and the in-note property inputs.
+  const allDatalist = document.getElementById('prop-values-all');
+  if (allDatalist) {
+    allDatalist.innerHTML = '';
+    Object.keys(data).sort().forEach(k => {
+      const opt = document.createElement('option');
+      opt.value = k;
+      allDatalist.appendChild(opt);
+    });
+  }
+
+  // 3. Rebuild the "Has property…" dropdown (name="prop_has").
+  //    Preserve the currently-selected key if it still exists.
+  document.querySelectorAll('select[name="prop_has"]').forEach(sel => {
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">Has property…</option>';
+    Object.keys(data).sort().forEach(k => {
+      const opt = document.createElement('option');
+      opt.value = k;
+      opt.textContent = k;
+      if (k === prev) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  });
+
+  // 4. Rebuild the "Status…" preset dropdown (id="adv-status-preset"),
+  //    from the new 'status' values. Preserve selection if still valid.
+  const statusSel = document.getElementById('adv-status-preset');
+  if (statusSel) {
+    const prev = statusSel.value;
+    const statusValues = data['status'] || [];
+    statusSel.innerHTML = '<option value="">Status…</option>';
+    statusValues.forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = v;
+      if (v === prev) opt.selected = true;
+      statusSel.appendChild(opt);
+    });
+  }
+
+  // 5. If the advanced-search property-key input is present, refresh the
+  //    autocomplete source list by re-attaching. The simplest safe move is
+  //    to leave whatever listeners are already there but point them at
+  //    window.ALL_PROP_VALUES, which we updated in step 1 — the closures
+  //    in attachAutocomplete call getItems() on each open, so they pick
+  //    up the new map automatically.
+  //
+  //    No further action needed for #adv-prop-key / #adv-prop-val.
+}
+
+
+/* ============================================================
+   Part 1: sidebar toggle + global UI
+   ============================================================ */
+(() => {
+  const layout = document.querySelector('.layout');
+  if (!layout) return;
+
+  const KEY = 'sidebar-collapsed';
+  const TREE_KEY = 'tree-expanded';
+  const RECENT_KEY = 'recent-notes';
+  const RECENT_MAX = 10;
+  const SIDEBAR_SCROLL_KEY = 'sidebar-scroll-top';
+
+  const collapseBtn = document.getElementById('sidebar-toggle');
+  const openBtn = document.getElementById('sidebar-open');
+  
+  // New action-bar sidebar toggles
+  const actionBarToggles = document.querySelectorAll('[id$="-sidebar-toggle"]');
+  actionBarToggles.forEach(btn => {
+    btn.addEventListener('click', () => {
+      // Toggle the collapsed class
+      const layout = document.querySelector('.layout');
+      if (layout) {
+        const isCollapsed = layout.classList.toggle('collapsed');
+        localStorage.setItem('sidebar-collapsed', isCollapsed ? '1' : '0');
+        document.documentElement.classList.toggle('collapsed', isCollapsed);
+      }
+    });
+  });  
+
+  if (new URLSearchParams(location.search).get('sidebar') === 'open') {
+    localStorage.setItem(KEY, '0');
+  }
+  if (new URLSearchParams(location.search).get('sidebar') === 'closed') {
+    localStorage.setItem(KEY, '1');
+  }
+
+  if (localStorage.getItem(KEY) !== '0') {
+    layout.classList.add('collapsed');
+  }
+
+  function refresh() {
+    const collapsed = layout.classList.contains('collapsed');
+    if (openBtn) openBtn.style.display = collapsed ? 'inline-flex' : 'none';
+  }
+  refresh();
+
+  if (window.visualViewport) {
+    const vv = window.visualViewport;
+    const syncViewportHeight = () => {
+      // Ignore pinch-zoom resize — only adapt to keyboard-driven changes.
+      if (vv.scale && vv.scale !== 1) return;
+      document.documentElement.style.setProperty(
+        '--app-height', vv.height + 'px'
+      );
+    };
+    vv.addEventListener('resize', syncViewportHeight);
+    vv.addEventListener('scroll', syncViewportHeight);
+    syncViewportHeight();
+  }
+
+  if (window.matchMedia('(max-width: 720px)').matches &&
+      document.querySelector('.results-list')) {
+    layout.classList.add('collapsed');
+    localStorage.setItem(KEY, '1');
+    refresh();
+  }
+
+  function setCollapsed(v) {
+    layout.classList.toggle('collapsed', v);
+    document.documentElement.classList.toggle('collapsed', v);
+    localStorage.setItem(KEY, v ? '1' : '0');
+    refresh();
+  }
+
+  function instantNavigate() {
+    document.documentElement.classList.add('navigating');
+  }
+
+  function instantCollapseBeforeNav() {
+    localStorage.setItem(KEY, '1');
+    layout.classList.add('collapsed');
+    document.documentElement.classList.add('no-transition');
+  }
+
+  window.collapseSidebar = () => setCollapsed(true);
+  window.instantNavigate = instantNavigate;
+  window.instantCollapseBeforeNav = instantCollapseBeforeNav;
+
+  if (collapseBtn) collapseBtn.addEventListener('click', () => setCollapsed(true));
+  if (openBtn) openBtn.addEventListener('click', () => {
+    setCollapsed(false);
+    if (typeof refreshVisibleTree === 'function') refreshVisibleTree();
+  });
+  // Full-screen sidebar: bottom "Close" button
+  const closeSidebarBtn = document.getElementById('sidebar-close-btn');
+  if (closeSidebarBtn) {
+    closeSidebarBtn.addEventListener('click', () => setCollapsed(true));
+  }  
+  
+  // ---------- Swipe to open sidebar (Mobile) ----------
+  let touchStartX = 0;
+  let touchStartY = 0;
+  let isEdgeSwipe = false;
+
+  document.addEventListener('touchstart', (e) => {
+    // Only run on mobile screens and when the sidebar is currently closed
+    if (!window.matchMedia('(max-width: 720px)').matches) return;
+    if (!layout.classList.contains('collapsed')) return;
+    if (e.target.closest('#note-content, textarea, input')) return; // Don't interfere with text selection
+
+    const touch = e.touches[0];
+    // Check if the touch started within 30px of the left edge
+    if (touch.clientX < 30) {
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+      isEdgeSwipe = true;
+    } else {
+      isEdgeSwipe = false;
+    }
+  }, { passive: true });
+
+  document.addEventListener('touchmove', (e) => {
+    if (!isEdgeSwipe) return;
+
+    const touch = e.touches[0];
+    const deltaX = touch.clientX - touchStartX;
+    const deltaY = touch.clientY - touchStartY;
+
+    // If they are swiping right more than 60px, and not scrolling vertically
+    if (deltaX > 60 && Math.abs(deltaY) < 40) {
+      isEdgeSwipe = false; // Reset
+      setCollapsed(false); // Open the sidebar!
+      if (typeof refreshVisibleTree === 'function') refreshVisibleTree();
+    }
+  }, { passive: true });
+
+  document.addEventListener('touchend', () => {
+    isEdgeSwipe = false;
+  });  
+
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.key === '\\') {
+      e.preventDefault();
+      setCollapsed(!layout.classList.contains('collapsed'));
+    }
+  });
+
+  const editorPane = document.querySelector('.editor');
+  if (editorPane) {
+    editorPane.addEventListener('click', (e) => {
+      if (!window.matchMedia('(max-width: 720px)').matches) return;
+      if (layout.classList.contains('collapsed')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setCollapsed(true);
+    }, true);
+  }
+
+  // ---------- Advanced search panel ----------
+  const advToggle = document.getElementById('adv-toggle');
+  const advPanel = document.getElementById('adv-search');
+  if (advToggle && advPanel) {
+    const ADV_KEY = 'adv-open';
+    const wantOpen = localStorage.getItem(ADV_KEY) === '1';
+
+    if (wantOpen) {
+      advPanel.classList.add('open');
+      advToggle.classList.add('active');
+    }
+
+    advToggle.addEventListener('click', () => {
+      const isOpen = advPanel.classList.toggle('open');
+      advToggle.classList.toggle('active', isOpen);
+      localStorage.setItem(ADV_KEY, isOpen ? '1' : '0');
+    });
+  }
+
+  // ---------- Advanced search: Today button ----------
+  const advTodayBtn = document.getElementById('adv-today-btn');
+  const advDueDate = document.getElementById('adv-due-date');
+  if (advTodayBtn && advDueDate) {
+    const todayStr = () => {
+      const d = new Date();
+      const p = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+    };
+    const syncTodayBtn = () => {
+      const isToday = advDueDate.value === todayStr();
+      advTodayBtn.classList.toggle('active', isToday);
+    };
+    advTodayBtn.addEventListener('click', () => {
+      if (advDueDate.value === todayStr()) {
+        advDueDate.value = '';
+      } else {
+        advDueDate.value = todayStr();
+      }
+      syncTodayBtn();
+    });
+    advDueDate.addEventListener('input', syncTodayBtn);
+    advDueDate.addEventListener('change', syncTodayBtn);
+    syncTodayBtn();
+  }
+  
+  // ---------- Advanced search: clear date button ----------
+  const advClearDate = document.getElementById('adv-clear-date');
+  if (advClearDate && advDueDate) {
+    const syncClearBtn = () => {
+      if (advDueDate.value) {
+        advClearDate.classList.remove('hidden');
+      } else {
+        advClearDate.classList.add('hidden');
+      }
+    };
+
+    advClearDate.addEventListener('click', () => {
+      advDueDate.value = '';
+      advDueDate.dispatchEvent(new Event('input', { bubbles: true }));
+      advDueDate.dispatchEvent(new Event('change', { bubbles: true }));
+      syncClearBtn();
+    });
+
+    // Update button visibility when the date changes
+    advDueDate.addEventListener('input', syncClearBtn);
+    advDueDate.addEventListener('change', syncClearBtn);
+
+    // Initial state
+    syncClearBtn();
+  }  
+
+  // ---------- Advanced search form validation ----------
+  window.validateSearchForm = function () {
+    const q  = (document.getElementById('search-q')?.value || '').trim();
+    const pk = (document.getElementById('adv-prop-key')?.value || '').trim();
+    const pv = (document.getElementById('adv-prop-val')?.value || '').trim();
+    const dd = (document.getElementById('adv-due-date')?.value || '').trim();
+    const dop = (document.getElementById('adv-due-op')?.value || '').trim();
+    const status = (document.getElementById('adv-status-preset')?.value || '').trim();
+    const hideDone = !!document.getElementById('adv-exclude-done')?.checked;
+    
+    // New filters
+    const propHas = document.querySelector('select[name="prop_has"]')?.value;
+    const parentFilter = document.querySelector('select[name="parent_filter"]')?.value;
+
+    const msg = document.getElementById('adv-search-msg');
+    const show = (text) => {
+      if (msg) {
+        msg.textContent = text;
+        msg.style.display = 'block';
+      }
+    };
+    const hide = () => {
+      if (msg) msg.style.display = 'none';
+    };
+
+    const isRealDateOp = ['<', '<=', '=', '>=', '>'].includes(dop);
+    const hasAny = q || pk || pv || dd || dop || status || hideDone || propHas || parentFilter;
+
+    if (!hasAny) {
+      show('Select at least one filter.');
+      return false;
+    }
+    if (isRealDateOp && !dd) {
+      show('Select a date.');
+      return false;
+    }
+    hide();
+    return true;
+  };
+  
+  // Attach manual submit handler to the NEW advanced search arrow button
+  const advSearchBtnNew = document.querySelector('.adv-search-submit-new');
+  if (advSearchBtnNew) {
+    advSearchBtnNew.addEventListener('click', (e) => {
+      e.preventDefault(); // Stop default form submission
+      const form = document.getElementById('search-form');
+      if (!form) return;
+      if (typeof window.prepareSearchForm === 'function') {
+        window.prepareSearchForm(form);
+      }
+      if (typeof window.validateSearchForm === 'function' && !window.validateSearchForm()) {
+        return;
+      }
+      form.submit(); // Submit if validation passes
+    });
+  }  
+
+  window.prepareSearchForm = function (form) {
+    if (!form) return;
+
+    form.querySelectorAll('input[data-prep-hidden]').forEach(el => el.remove());
+
+    const addHidden = (name, value) => {
+      const el = document.createElement('input');
+      el.type = 'hidden';
+      el.name = name;
+      el.value = value;
+      el.dataset.prepHidden = '1';
+      form.appendChild(el);
+    };
+
+    const statusSel = document.getElementById('adv-status-preset');
+    if (statusSel && statusSel.value) {
+      form.querySelector('input[name="prop_key"]')?.remove();
+      form.querySelector('input[name="prop_val"]')?.remove();
+      addHidden('prop_key', 'status');
+      addHidden('prop_val', statusSel.value);
+    }
+
+    const excl = document.getElementById('adv-exclude-done');
+    if (excl && excl.checked) {
+      addHidden('exclude_status', 'done,canceled');
+    }
+
+    // If the Today button is active, submit `today` instead of the literal date.
+    const dueDateInput = document.getElementById('adv-due-date');
+    const todayBtn = document.getElementById('adv-today-btn');
+    if (dueDateInput && todayBtn && todayBtn.classList.contains('active')) {
+      form.querySelector('input[name="due_date"]')?.remove();
+      addHidden('due_date', 'today');
+    }
+  };
+
+  // ---------- Advanced search: custom autocomplete ----------
+  (function () {
+    const keyInput = document.getElementById('adv-prop-key');
+    const valInput = document.getElementById('adv-prop-val');
+    const values = window.ALL_PROP_VALUES || {};
+
+    if (!keyInput) return;
+
+    function splitValues(raw) {
+      const out = new Set();
+      (raw || []).forEach(v => {
+        const s = String(v);
+        out.add(s);
+        s.split(',').forEach(p => {
+          const t = p.trim();
+          if (t) out.add(t);
+        });
+      });
+      return [...out].sort();
+    }
+
+    attachAutocomplete(keyInput, () => Object.keys(values).sort());
+
+    if (valInput) {
+      attachAutocomplete(valInput, () => {
+        const k = keyInput.value.trim().toLowerCase();
+        return splitValues(values[k] || []);
+      });
+    }
+  })();
+  
+  // ---------- Pinned section toggle state ----------
+  const pinnedToggle = document.getElementById('pinned-toggle');
+  const pinnedSection = document.getElementById('pinned-section');
+  const pinnedList = document.getElementById('pinned-list');
+  if (pinnedToggle && pinnedSection && pinnedList) {
+    const openKey = 'pinned-open';
+    // Restore state on load
+    if (localStorage.getItem(openKey) === '1') {
+      pinnedSection.classList.add('open');
+      pinnedList.style.display = 'block';
+    }
+    // Save state when toggled
+    pinnedToggle.addEventListener('click', () => {
+      const isOpen = pinnedSection.classList.toggle('open');
+      pinnedList.style.display = isOpen ? 'block' : 'none';
+      localStorage.setItem(openKey, isOpen ? '1' : '0');
+    });
+  }  
+
+  // ---------- Recent notes ----------
+  function loadRecent() {
+    try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); }
+    catch { return []; }
+  }
+  function saveRecent(list) {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX)));
+  }
+  function pushRecent(id, title, hasChildren, isTemplate, isMapNote) {
+    let list = loadRecent().filter(x => String(x.id) !== String(id));
+    list.unshift({
+      id: Number(id),
+      title,
+      hasChildren: !!hasChildren,
+      isTemplate: !!isTemplate,
+      isMapNote: !!isMapNote,
+    });
+    saveRecent(list);
+    renderRecent();
+  }
+  
+  function iconForRecent(item) {
+    if (item.isTemplate) return 'bookmark';
+    if (item.isMapNote) return 'map';
+    if (item.hasChildren) return 'folder';
+    return 'description';
+  }
+  
+  function renderRecent() {
+    const section = document.getElementById('recent-section') || document.querySelector('[data-note-id="recent-section"]');
+    if (!section) return;
+    
+    // Find the <ul> inside the Recent row
+    const list = section.querySelector('.tree-list.nested');
+    if (!list) return;
+
+    const items = loadRecent();
+    if (!items.length) {
+      section.style.display = 'none';
+      return;
+    }
+    
+    // Show the section and list
+    section.style.display = 'block';
+    list.innerHTML = '';
+    
+    items.forEach(it => {
+      const li = document.createElement('li');
+      const row = document.createElement('div');
+      row.className = 'tree-row';
+      
+      const a = document.createElement('a');
+      a.href = `/?note=${it.id}`;
+      a.className = 'tree-link';
+      if (String(window.NOTE_ID) === String(it.id)) {
+        li.classList.add('row-active');
+      }
+      a.dataset.noteId = String(it.id);
+      const icon = document.createElement('span');
+      icon.className = 'material-symbols-rounded note-icon';
+      icon.textContent = iconForRecent(it);
+      const span = document.createElement('span');
+      span.className = 'tree-label';
+      span.textContent = it.title;
+      
+      a.appendChild(icon);
+      a.appendChild(span);
+      row.appendChild(a);
+      li.appendChild(row);
+      list.appendChild(li);
+    });
+  }
+  window.renderRecent = renderRecent;
+  renderRecent(); 
+
+  const recentToggle = document.getElementById('recent-toggle');
+  const recentSection = document.getElementById('recent-section');
+  const recentList = document.getElementById('recent-list');
+  if (recentToggle && recentSection && recentList) {
+    const openKey = 'recent-open';
+    if (localStorage.getItem(openKey) === '1') {
+      recentSection.classList.add('open');
+      recentList.style.display = 'block';
+    }
+    recentToggle.addEventListener('click', () => {
+      const isOpen = recentSection.classList.toggle('open');
+      recentList.style.display = isOpen ? 'block' : 'none';
+      localStorage.setItem(openKey, isOpen ? '1' : '0');
+    });
+  }
+  
+  const savedToggle = document.getElementById('saved-search-toggle');
+  const savedSection = document.getElementById('saved-search-section');
+  const savedList = document.getElementById('saved-search-list');
+  if (savedToggle && savedSection && savedList) {
+    const openKey = 'saved-search-open';
+    if (localStorage.getItem(openKey) === '1') {
+      savedSection.classList.add('open');
+      savedList.style.display = 'block';
+    }
+    savedToggle.addEventListener('click', () => {
+      const isOpen = savedSection.classList.toggle('open');
+      savedList.style.display = isOpen ? 'block' : 'none';
+      localStorage.setItem(openKey, isOpen ? '1' : '0');
+    });
+  }  
+
+  // Add current note to recents
+  if (window.NOTE_ID) {
+    const tEl = document.getElementById('note-title');
+    if (tEl) pushRecent(window.NOTE_ID, tEl.value || 'Untitled', window.HAS_CHILDREN, window.IS_TEMPLATE, window.IS_MAP_NOTE);
+  }
+
+  // Prune any recents pointing to notes that no longer exist on the server
+  (async function pruneRecent() {
+    try {
+      let recents = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+      if (!recents.length) return;
+
+      const res = await fetch('/api/notes/verify-tabs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: recents.map(r => r.id) })
+      });
+      if (!res.ok) return;
+
+      const data = await res.json();
+      if (!data.ok || !Array.isArray(data.valid_ids)) return;
+
+      const validSet = new Set(data.valid_ids.map(String));
+      const before = recents.length;
+      recents = recents.filter(r => validSet.has(String(r.id)));
+
+      if (recents.length !== before) {
+        localStorage.setItem(RECENT_KEY, JSON.stringify(recents));
+        renderRecent();
+      }
+    } catch (e) {
+      // silent fail — not critical
+    }
+  })();
+
+  // ---------- Clear search input ----------
+  const clearBtn = document.getElementById('clear-search');
+  const searchInput = document.getElementById('search-q');
+  const advPropKey = document.getElementById('adv-prop-key');
+  const advPropVal = document.getElementById('adv-prop-val');
+  const advDueOp = document.getElementById('adv-due-op');
+
+  // ADD THIS BLOCK:
+  if (searchInput) {
+    searchInput.addEventListener('input', () => {
+      const hiddenSearch = document.querySelector('input[name="search"]');
+      if (hiddenSearch) hiddenSearch.value = '';
+    });
+  }
+  // END ADD BLOCK  
+
+  function updateClearButton() {
+    if (!clearBtn) return;
+    const hasAny =
+      (searchInput && searchInput.value.trim()) ||
+      (advPropKey && advPropKey.value.trim()) ||
+      (advPropVal && advPropVal.value.trim()) ||
+      (advDueDate && advDueDate.value) ||
+      (advDueOp && advDueOp.value && advDueOp.value !== '');
+    clearBtn.classList.toggle('hidden', !hasAny);
+  }
+
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      // Clear the fields
+      if (searchInput) searchInput.value = '';
+      if (advPropKey) advPropKey.value = '';
+      if (advPropVal) advPropVal.value = '';
+      if (advDueDate) advDueDate.value = '';
+      if (advDueOp) advDueOp.value = '';
+      const statusSel = document.getElementById('adv-status-preset');
+      if (statusSel) statusSel.value = '';
+      const hideDone = document.getElementById('adv-exclude-done');
+      if (hideDone) hideDone.checked = false;
+      updateClearButton();
+
+      // Navigate to the clean URL to clear the search state
+      location.href = '/';
+    });
+  }
+
+  [searchInput, advPropKey, advPropVal, advDueDate, advDueOp].forEach(el => {
+    if (!el) return;
+    const evt = el.tagName === 'SELECT' ? 'change' : 'input';
+    el.addEventListener(evt, updateClearButton);
+  });
+
+  updateClearButton();
+
+  // Clear buttons for the advanced property key/value inputs
+  document.querySelectorAll('.adv-input-clear').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.dataset.target;
+      const target = document.getElementById(targetId);
+      if (target) {
+        target.value = '';
+        target.focus();
+        target.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+  });
+
+  // ---------- Save search (always creates a new one) ----------
+  const saveSearchBtn = document.getElementById('save-search');
+  if (saveSearchBtn) {
+    saveSearchBtn.addEventListener('click', async () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const keep = new URLSearchParams();
+      for (const k of ['q', 'prop_key', 'prop_val', 'due_date', 'due_op', 'group_by', 'exclude_status', 'prop_has', 'parent_filter']) {
+        if (urlParams.get(k)) keep.set(k, urlParams.get(k));
+      }
+      if (!keep.toString()) return;
+
+      // Include active table columns
+      const activeCols = [];
+      document.querySelectorAll('#table-col-options input[type="checkbox"]:checked').forEach(cb => {
+        activeCols.push(cb.value);
+      });
+      if (activeCols.length > 0) {
+        keep.set('cols', activeCols.join(','));
+      }
+
+      const name = prompt('Name for this search:');
+      if (!name || !name.trim()) return;
+
+      const sortSelect = document.getElementById('results-sort-by');
+      const sortDir = document.getElementById('results-sort-dir');
+      const viewToggle = document.getElementById('results-view-toggle');
+      const viewMode = (viewToggle && viewToggle.classList.contains('active')) ? 'table' : 'list';
+      
+      const r = await fetch('/search/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          params: keep.toString(),
+          sort_by: sortSelect?.value || 'modified',
+          sort_dir: sortDir?.value || 'desc',
+          view_mode: viewMode,
+        }),
+      });
+      const data = await r.json();
+      if (data.ok && data.id) {
+        const keep2 = new URLSearchParams(keep);
+        keep2.set('search', data.id);
+        location.href = '/?' + keep2.toString();
+      } else {
+        location.reload();
+      }
+    });
+  }
+
+  // ---------- Update current saved search ----------
+  const updateSearchBtn = document.getElementById('update-search');
+  if (updateSearchBtn) {
+    updateSearchBtn.addEventListener('click', async () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const id = urlParams.get('search');
+      if (!id) return;
+
+      const link = document.querySelector(`.saved-search-link[data-search-id="${id}"] .tree-label`);
+      const savedName = link ? link.textContent : `#${id}`;
+
+      if (!confirm(`Update search "${savedName}" with current filters?`)) return;
+
+      const keep = new URLSearchParams();
+      for (const k of ['q', 'prop_key', 'prop_val', 'due_date', 'due_op', 'group_by', 'exclude_status', 'prop_has', 'parent_filter']) {
+        if (urlParams.get(k)) keep.set(k, urlParams.get(k));
+      }
+
+      const activeCols = [];
+      document.querySelectorAll('#table-col-options input[type="checkbox"]:checked').forEach(cb => {
+        activeCols.push(cb.value);
+      });
+      if (activeCols.length > 0) {
+        keep.set('cols', activeCols.join(','));
+      }
+
+      const sortSelect = document.getElementById('results-sort-by');
+      const sortDir = document.getElementById('results-sort-dir');
+      const viewToggle = document.getElementById('results-view-toggle');
+      const viewMode = (viewToggle && viewToggle.classList.contains('active')) ? 'table' : 'list';
+
+      const r = await fetch(`/search/${id}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          params: keep.toString(),
+          sort_by: sortSelect?.value || 'modified',
+          sort_dir: sortDir?.value || 'desc',
+          view_mode: viewMode,
+        }),
+      });
+      if (r.ok) {
+        const keep2 = new URLSearchParams(keep);
+        keep2.set('search', id);
+        keep2.set('sort_by', sortSelect?.value || 'modified');
+        keep2.set('sort_dir', sortDir?.value || 'desc');
+        location.href = '/?' + keep2.toString();
+      } else {
+        location.reload();
+      }
+    });
+  }
+
+  // ---------- Saved search rename / delete ----------
+  document.querySelectorAll('.saved-search-link').forEach(a => {
+    a.addEventListener('click', (e) => {
+      if (e.target.closest('.row-btn')) e.preventDefault();
+    });
+  });
+
+  document.querySelectorAll('.row-btn[data-action="rename-search"]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = btn.dataset.searchId;
+      const current = btn.dataset.current || '';
+      const nv = prompt('New name:', current);
+      if (nv === null) return;
+      const trimmed = nv.trim();
+      if (!trimmed || trimmed === current) return;
+      await fetch(`/search/${id}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: trimmed }),
+      });
+      const label = btn.closest('a').querySelector('.tree-label');
+      if (label) label.textContent = trimmed;
+      btn.dataset.current = trimmed;
+    });
+  });
+
+document.querySelectorAll('.row-btn[data-action="delete-search"]').forEach(btn => {
+  btn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = btn.dataset.searchId;
+    if (!confirm('Delete this search?')) return;
+    await fetch(`/search/${id}/delete`, { method: 'POST' });
+    btn.closest('li').remove();
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const currentSearchId = urlParams.get('search');
+    
+    if (String(currentSearchId) === String(id)) {
+      // We were viewing this search — navigate away
+      let dest = window.ROOT_ID ? `/?note=${window.ROOT_ID}` : '/';
+      try {
+        const prev = sessionStorage.getItem('prev-note-id');
+        if (prev) dest = `/?note=${prev}`;
+      } catch (err) {}
+      localStorage.setItem('sidebar-collapsed', '0');
+      location.replace(dest + (dest.includes('?') ? '&' : '?') + 't=' + Date.now());
+    } else {
+      // We just deleted a search we weren't viewing — reload to refresh sidebar
+      location.replace(location.pathname + location.search + (location.search ? '&' : '?') + 't=' + Date.now());
+    }
+  });
+});
+
+  // ---------- New note modal ----------
+  const newNoteModal = document.getElementById('new-note-modal');
+  let newNoteParentId = null;
+
+  function openNewNoteModal(parentId) {
+    openNewNoteModalWithCaptures(parentId);
+    refreshNewNoteTemplates();
+  }
+  window.__openNewNoteModal = openNewNoteModal;
+
+  async function refreshNewNoteTemplates() {
+    if (!newNoteModal) return;
+    const body = newNoteModal.querySelector('.modal-body');
+    if (!body) return;
+    try {
+      const r = await fetch('/templates');
+      if (!r.ok) return;
+      const list = await r.json();
+      body.dataset.templateIds = JSON.stringify(list.map(t => t.id));
+      body.dataset.templateTitles = JSON.stringify(list.map(t => t.title));
+      renderNewNoteTemplateList();
+    } catch (e) {}
+  }
+
+  let newNoteSubmitNew = null;
+  let newNoteRenderList = null;
+  let newNoteCaptures = [];
+
+  async function refreshNewNoteCaptures() {
+    try {
+      const r = await fetch('/captures');
+      if (r.ok) newNoteCaptures = await r.json();
+    } catch (e) { newNoteCaptures = []; }
+  }
+
+  if (newNoteModal) {
+    const modalBody = newNoteModal.querySelector('.modal-body');
+
+    newNoteSubmitNew = (fields) => {
+      const form = document.createElement('form');
+      form.method = 'post';
+      form.action = '/note/new';
+      
+      const merged = { ...(fields || {}) };
+      if (newNoteParentId !== null) merged.parent_id = newNoteParentId;
+      
+      for (const [k, v] of Object.entries(merged)) {
+        const inp = document.createElement('input');
+        inp.type = 'hidden';
+        inp.name = k;
+        inp.value = v;
+        form.appendChild(inp);
+      }
+
+      // Intercept the submission to prevent history pollution
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        
+        fetch('/note/new', {
+          method: 'POST',
+          body: new FormData(form)
+        }).then(r => {
+          if (r.url) {
+            localStorage.setItem('sidebar-collapsed', '1');
+            window.instantNavigate?.();
+            location.replace(r.url);
+          } else {
+            form.submit();
+          }
+        }).catch(() => {
+          form.submit();
+        });
+      });
+
+      document.body.appendChild(form);
+      form.dispatchEvent(new Event('submit'));
+    };
+
+    newNoteRenderList = () => {
+      let ids = [];
+      let titles = [];
+      try {
+        ids = JSON.parse(modalBody.dataset.templateIds || '[]');
+        titles = JSON.parse(modalBody.dataset.templateTitles || '[]');
+      } catch (e) {
+        console.warn('template parse failed', e);
+      }
+
+      modalBody.innerHTML = '';
+
+      const blank = document.createElement('button');
+      blank.className = 'modal-item';
+      blank.innerHTML = '<span class="material-symbols-rounded">note_add</span><span>Blank</span>';
+      blank.addEventListener('click', () => newNoteSubmitNew({}));
+      modalBody.appendChild(blank);
+
+      if (newNoteCaptures.length) {
+        const label = document.createElement('div');
+        label.className = 'modal-section-label';
+        label.textContent = 'Captures';
+        modalBody.appendChild(label);
+
+        newNoteCaptures.forEach(cap => {
+          const btn = document.createElement('button');
+          btn.className = 'modal-item';
+          const icon = cap.kind === 'new_child' ? 'note_add'
+                     : cap.kind === 'daily_note' ? 'today'
+                     : cap.kind === 'append_text' ? 'text_fields'
+                     : 'attach_file';
+          btn.innerHTML =
+            `<span class="material-symbols-rounded">${icon}</span>` +
+            `<span></span>`;
+          btn.querySelector('span:last-child').textContent = cap.name;
+          btn.addEventListener('click', () => runCapture(cap));
+          modalBody.appendChild(btn);
+        });
+      }
+
+      if (ids.length) {
+        const label = document.createElement('div');
+        label.className = 'modal-section-label';
+        label.textContent = 'Templates';
+        modalBody.appendChild(label);
+
+        ids.forEach((id, i) => {
+          const btn = document.createElement('button');
+          btn.className = 'modal-item';
+          btn.innerHTML = '<span class="material-symbols-rounded">bookmark</span><span></span>';
+          btn.querySelector('span:last-child').textContent = titles[i];
+          btn.addEventListener('click', () => newNoteSubmitNew({ template_id: id }));
+          modalBody.appendChild(btn);
+        });
+      }
+    };
+
+    const closeModal = () => newNoteModal.classList.remove('open');
+    newNoteModal.querySelectorAll('[data-close]').forEach(el => {
+      el.addEventListener('click', closeModal);
+    });
+  }
+
+  function renderNewNoteTemplateList() {
+    if (newNoteRenderList) newNoteRenderList();
+  }
+
+  async function openNewNoteModalWithCaptures(parentId) {
+    await refreshNewNoteCaptures();
+    newNoteParentId = (parentId === null || parentId === undefined || parentId === '')
+      ? null
+      : String(parentId);
+    localStorage.setItem('sidebar-collapsed', '1');
+    if (!newNoteModal) return;
+    newNoteModal.classList.add('open');
+    renderNewNoteTemplateList();
+  }
+
+  async function runCapture(cap) {
+    if (newNoteModal) newNoteModal.classList.remove('open');
+
+    if (cap.kind === 'new_child') {
+      try {
+        const r = await fetch(`/captures/${cap.id}/run`, { method: 'POST' });
+        const data = await r.json();
+        if (!data.ok) {
+          alert(data.error || 'Capture failed');
+          return;
+        }
+        if (data.after === 'stay') {
+          showToast('Created "' + (data.title || 'note') + '"');
+          // The note was created; keep the user on the current page.
+          // Do NOT reload — that would lose scroll/focus and feel
+          // like a glitch. Instead, refresh the sidebar tree so the new
+          // child appears in place.
+          localStorage.setItem('sidebar-collapsed', '0');
+          if (typeof window.__refreshTree === 'function') {
+            try { await window.__refreshTree(); } catch (err) {}
+          }
+        } else if (data.url) {
+          // Collapse the sidebar before navigating so it stays closed
+          // on the destination page — matches every other navigation
+          // path in this file.
+          localStorage.setItem('sidebar-collapsed', '1');
+          window.instantCollapseBeforeNav?.();
+          window.instantNavigate?.();
+          location.replace(data.url);
+        }
+      } catch (e) {
+        alert('Capture failed: ' + e.message);
+      }
+      return;
+    }
+
+    if (cap.kind === 'daily_note') {
+      const actionPart = (cap.after_action || '').split(':')[0];
+      
+      if (actionPart === 'append_text' || cap.after_action === 'append_text') {
+        const text = await window.__openAppendModal();
+        if (text === null || !text.trim()) return;
+        try {
+          const r = await fetch(`/captures/${cap.id}/run`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: text.trim() }),
+          });
+          const data = await r.json();
+          if (!data.ok) { alert(data.error || 'Failed'); return; }
+          
+          // Refresh dashboard embed if we are on the dashboard
+          if (typeof window.__refreshDashboardJournal === 'function') {
+            window.__refreshDashboardJournal();
+          }
+
+          if (window.NOTE_ID && String(window.NOTE_ID) === String(data.id)) {
+            if (typeof window.__reloadEditorContent === 'function') {
+              window.__reloadEditorContent(data.content);
+            }
+            return;
+          }
+          
+          if (data.url) {
+            if (data.after === 'navigate') {
+              localStorage.setItem('sidebar-collapsed', '1');
+              location.replace(data.url);
+            } else {
+              showToast('Appended to "' + data.title + '"');
+            }
+          }
+        } catch (e) {
+          alert('Failed: ' + e.message);
+        }
+        return;
+      }
+      
+      if (actionPart === 'attach_file' || cap.after_action === 'attach_file') {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.addEventListener('change', async () => {
+          if (!input.files.length) return;
+          const fd = new FormData();
+          fd.append('file', input.files[0]);
+          try {
+            const r = await fetch(`/captures/${cap.id}/run`, {
+              method: 'POST',
+              body: fd,
+            });
+            const data = await r.json();
+            if (!data.ok) { alert(data.error || 'Failed'); return; }
+            
+            // Refresh dashboard embed if we are on the dashboard
+            if (typeof window.__refreshDashboardJournal === 'function') {
+              window.__refreshDashboardJournal();
+            }
+
+            if (data.after === 'navigate' && data.note_url) {
+              localStorage.setItem('sidebar-collapsed', '1');
+              location.replace(data.note_url);
+            } else {
+              showToast('Attached to "' + data.title + '"');
+              
+              // If we are on the dashboard, just reload the page to show the new file
+              if (window.location.pathname === '/dashboard') {
+                window.location.reload();
+              } else if (window.NOTE_ID && String(window.NOTE_ID) === String(data.id)) {
+                if (typeof window.__reloadEditorContent === 'function') {
+                  window.__reloadEditorContent(data.content);
+                }
+              }
+            }
+          } catch (e) {
+            alert('Failed: ' + e.message);
+          }
+        });
+        input.click();
+        return;
+      }
+      
+      if (actionPart === 'open' || cap.after_action === 'open') {
+        try {
+          const r = await fetch(`/captures/${cap.id}/run`, { method: 'POST' });
+          const data = await r.json();
+          if (!data.ok) { alert(data.error || 'Failed'); return; }
+          localStorage.setItem('sidebar-collapsed', '1');
+          location.replace(data.url);
+        } catch (e) {
+          alert('Failed: ' + e.message);
+        }
+        return;
+      }
+    }
+
+    if (cap.kind === 'append_text') {
+      const text = await window.__openAppendModal();
+      if (text === null || !text.trim()) return;
+      try {
+        const r = await fetch(`/captures/${cap.id}/run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: text.trim() }),
+        });
+        const data = await r.json();
+        if (!data.ok) {
+          alert(data.error || 'Append failed');
+          return;
+        }
+        if (data.after === 'navigate') {
+          location.replace(`/?note=${cap.target_id}`);
+        } else if (data.after === 'toast') {
+          showToast('Appended to "' + cap.target_title + '"');
+        }
+      } catch (e) {
+        alert('Append failed: ' + e.message);
+      }
+      return;
+    }
+
+    if (cap.kind === 'attach_file') {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.addEventListener('change', async () => {
+        if (!input.files.length) return;
+        const fd = new FormData();
+        fd.append('file', input.files[0]);
+        try {
+          const r = await fetch(`/captures/${cap.id}/run`, {
+            method: 'POST',
+            body: fd,
+          });
+          const data = await r.json();
+          if (!data.ok) {
+            alert(data.error || 'Attach failed');
+            return;
+          }
+          if (data.after === 'navigate') {
+            location.replace(`/?note=${cap.target_id}`);
+          } else if (data.after === 'toast') {
+            showToast('Attached to "' + cap.target_title + '"');
+          }
+        } catch (e) {
+          alert('Attach failed: ' + e.message);
+        }
+      });
+      input.click();
+      return;
+    }
+  }
+
+  function showToast(msg) {
+    let el = document.getElementById('app-toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'app-toast';
+      el.className = 'app-toast';
+      document.body.appendChild(el);
+    }
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(el._timer);
+    el._timer = setTimeout(() => el.classList.remove('show'), 2200);
+  }
+  window.showToast = showToast;
+
+  // ---------- Quick switcher ----------
+  const qsBtn   = document.getElementById('quick-switcher-btn');
+  const qsModal = document.getElementById('quick-switcher-modal');
+  const qsInput = document.getElementById('qs-input');
+  const qsResults = document.getElementById('qs-results');
+
+  function escapeHtmlBasic(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+
+  if (qsBtn && qsModal && qsInput && qsResults) {
+    let qsIndex = 0;
+    let qsItems = [];       // note results
+    let qsSearches = [];    // saved search results
+    let qsBlocks = [];
+    let qsTimer = null;
+    let openInNewTab = false;
+
+    // Combined display list for keyboard nav
+    let flatRows = [];
+
+    const qsRender = () => {
+      const inputVal = qsInput.value.trim();
+
+      // Offer "Create '<title>'" if no exact note match
+      let createOffer = null;
+      if (inputVal) {
+        const exactNote = qsItems.some(n =>
+          (n.title || '').toLowerCase() === inputVal.toLowerCase()
+        );
+        const exactSearch = qsSearches.some(s =>
+          (s.name || '').toLowerCase() === inputVal.toLowerCase()
+        );
+        if (!exactNote && !exactSearch) createOffer = inputVal;
+      }
+
+      // Build the combined flat list
+      flatRows = [];
+
+      // Create-offer row goes first so it appears above Root.
+      if (createOffer) {
+        flatRows.push({ kind: 'create', title: createOffer });
+      }
+        // Dashboard option
+        flatRows.push({ kind: 'dashboard', title: 'Dashboard' });
+        // Empty-page option
+        flatRows.push({ kind: 'empty', title: 'Empty' });
+
+      qsItems.forEach(n => flatRows.push({ kind: 'note', id: n.id, title: n.title }));
+      qsBlocks.forEach((b, i) => flatRows.push({ kind: 'block', note_id: b.note_id, block_id: b.block_id, idx: i }));
+      qsSearches.forEach(s => flatRows.push({ kind: 'search', id: s.id, name: s.name, params: s.params }));
+
+      // Build HTML in sections
+      let html = '';
+
+      // Create option (above Root)
+      if (createOffer) {
+        const idx = flatRows.findIndex(r => r.kind === 'create');
+        html += `<div class="ac-item ac-create ${idx === qsIndex ? 'sel' : ''}" data-kind="create">
+                   <span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px">add</span>
+                   Create "${escapeHtmlBasic(createOffer)}"
+                 </div>`;
+      }
+
+        // Dashboard option
+        const dashIdx = flatRows.findIndex(r => r.kind === 'dashboard');
+        html += `<div class="ac-item ${dashIdx === qsIndex ? 'sel' : ''}" data-kind="dashboard">
+                   <span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px">dashboard</span>
+                   Dashboard
+                 </div>`;
+
+        // Empty-page option
+        const emptyIdx = flatRows.findIndex(r => r.kind === 'empty');
+        html += `<div class="ac-item ${emptyIdx === qsIndex ? 'sel' : ''}" data-kind="empty">
+                   <span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px">note_add</span>
+                   Empty
+                 </div>`;
+
+      // Notes section
+      if (qsItems.length) {
+        if (qsSearches.length || createOffer || qsItems.length) {
+          html += `<div class="modal-section-label">Notes</div>`;
+        }
+        qsItems.forEach((n) => {
+          const idx = flatRows.findIndex(r => r.kind === 'note' && r.id === n.id);
+          html += `<div class="ac-item ${idx === qsIndex ? 'sel' : ''}" data-kind="note" data-id="${n.id}">${escapeHtmlBasic(n.title)}</div>`;
+        });
+      }
+      
+      // Blocks section
+      if (qsBlocks.length) {
+        html += `<div class="modal-section-label">Blocks</div>`;
+        qsBlocks.forEach((b) => {
+          const idx = flatRows.findIndex(r => r.kind === 'block' && r.note_id === b.note_id && r.block_id === b.block_id);
+          html += `<div class="ac-item ${idx === qsIndex ? 'sel' : ''}" data-kind="block" data-note-id="${b.note_id}" data-block-id="${b.block_id}">
+                     <span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px;opacity:0.7">description</span>
+                     <span style="color: var(--text-faint); font-size: 12px;">${escapeHtmlBasic(b.note_title)}</span> — ${escapeHtmlBasic(b.block_text)}
+                   </div>`;
+        });
+      }      
+
+      // Searches section
+      if (qsSearches.length) {
+        html += `<div class="modal-section-label">Searches</div>`;
+        qsSearches.forEach((s) => {
+          const idx = flatRows.findIndex(r => r.kind === 'search' && r.id === s.id);
+          html += `<div class="ac-item ${idx === qsIndex ? 'sel' : ''}" data-kind="search" data-id="${s.id}" data-params="${escapeHtmlBasic(s.params || '')}" data-newtab="${openInNewTab}">
+                     <span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px;opacity:0.7">bookmark</span>
+                     ${escapeHtmlBasic(s.name)}
+                   </div>`;
+        });
+      }
+
+      qsResults.innerHTML = html || '<p class="modal-empty">No matching notes or searches.</p>';
+
+      qsResults.querySelectorAll('.ac-item').forEach(el => {
+        el.addEventListener('pointerenter', () => {
+          const kind = el.dataset.kind;
+          const id = el.dataset.id;
+          qsIndex = flatRows.findIndex(r =>
+            r.kind === kind && String(r.id) === String(id)
+          );
+          if (qsIndex < 0 && kind === 'create') {
+            qsIndex = flatRows.findIndex(r => r.kind === 'create');
+          }
+          if (qsIndex < 0 && kind === 'empty') {
+            qsIndex = 0;
+          }
+          // Re-render to update `.sel` class
+          qsResults.querySelectorAll('.ac-item').forEach((item) => {
+            const rk = item.dataset.kind;
+            const rid = item.dataset.id;
+            const ri = flatRows.findIndex(r =>
+              r.kind === rk && (rk === 'create' || rk === 'empty' ? true : String(r.id) === String(rid))
+            );
+            item.classList.toggle('sel', ri === qsIndex);
+          });
+        });
+
+        let touchStartY = 0;
+        el.addEventListener('pointerdown', (e) => {
+          touchStartY = e.clientY;
+        });
+        el.addEventListener('pointerup', async (e) => {
+          // If the finger moved more than 10px vertically, it was a scroll, not a tap
+          if (Math.abs(e.clientY - touchStartY) > 10) return;
+
+          e.preventDefault();
+          e.stopPropagation();
+          
+          const kind = el.dataset.kind;
+          localStorage.setItem('sidebar-collapsed', '1');
+
+          if (kind === 'dashboard') {
+            localStorage.setItem('sidebar-collapsed', '1');
+            location.href = '/dashboard';
+            return;
+          }
+
+          if (kind === 'empty') {
+            localStorage.setItem('sidebar-collapsed', '1');
+            location.href = `/` + (openInNewTab ? `?empty=1&newtab=1` : `?empty=1`);
+            return;
+          }          
+          
+          if (kind === 'empty') {
+            localStorage.setItem('sidebar-collapsed', '1');
+            location.href = `/` + (openInNewTab ? `?empty=1&newtab=1` : `?empty=1`);
+            return;
+          }
+
+          if (kind === 'create') {
+            try {
+              const r = await fetch('/note/create-by-title', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: inputVal })
+              });
+              const data = await r.json();
+              if (data.ok && data.id) {
+                location.href = `/?note=${data.id}${openInNewTab ? '&newtab=1' : ''}`;
+              } else {
+                alert('Failed to create note');
+              }
+            } catch(e) { alert('Error: ' + e.message); }
+            return;
+          }
+
+          if (kind === 'note') {
+            const noteId = parseInt(el.dataset.id, 10);
+            const currentIsNote = window.NOTE_ID && /^\d+$/.test(String(window.NOTE_ID));
+            if (!openInNewTab && currentIsNote && typeof window.__swapNoteInPlace === 'function') {
+              const ok = await window.__swapNoteInPlace(noteId);
+              if (ok) {
+                closeQs();
+                return;
+              }
+            }
+            location.href = openInNewTab ? `/?note=${noteId}&newtab=1` : `/?note=${noteId}`;
+            return;
+          }
+
+          if (kind === 'search') {
+            const searchId = el.dataset.id;
+            const params = el.dataset.params || '';
+            const isNewTab = el.dataset.newtab === 'true';
+            
+            const url = new URL('/', location.origin);
+            const p = new URLSearchParams(params);
+            p.set('search', searchId);
+            if (isNewTab) p.set('newtab', '1');
+            url.search = p.toString();
+            location.href = url.toString();
+            return;
+          }
+
+          if (kind === 'block') {
+            const nid = el.dataset.noteId;
+            const bid = el.dataset.blockId;
+            location.href = `/?note=${nid}&block=${bid}`;
+            return;
+          }
+        }); // end of el.addEventListener('click')
+      });
+    };
+
+    const qsFetch = async (q) => {
+      try {
+        const res = await fetch(`/api/quick-switcher?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        qsItems = data.notes || [];
+        qsSearches = data.searches || [];
+        qsBlocks = data.blocks || [];
+        qsIndex = 0;
+        qsRender();
+      } catch (e) {
+        console.error('Quick switcher fetch failed', e);
+      }
+    };
+
+    const openQs = (isNewTab = false) => {
+      openInNewTab = isNewTab;
+      qsModal.classList.add('open');
+      qsInput.value = '';
+      setTimeout(() => qsInput.focus(), 60);
+      qsFetch('');
+    };
+    
+    const closeQs = () => {
+      if (qsInput) qsInput.blur();
+      qsModal.classList.remove('open');
+      openInNewTab = false;
+    };
+
+    qsBtn.addEventListener('click', () => openQs(false));
+    
+    qsModal.querySelectorAll('[data-close]').forEach(el => {
+      el.addEventListener('click', closeQs);
+    });
+
+    qsInput.addEventListener('input', () => {
+      clearTimeout(qsTimer);
+      qsTimer = setTimeout(() => qsFetch(qsInput.value.trim()), 150);
+    });
+
+    qsInput.addEventListener('keydown', async (e) => {
+      if (e.key === 'ArrowDown') {
+        qsIndex = Math.min(qsIndex + 1, flatRows.length - 1);
+        qsRender(); e.preventDefault();
+      } else if (e.key === 'ArrowUp') {
+        qsIndex = Math.max(qsIndex - 1, 0);
+        qsRender(); e.preventDefault();
+      } else if (e.key === 'Enter') {
+        const row = flatRows[qsIndex];
+        if (!row) return;
+
+        if (row.kind === 'dashboard') {
+          localStorage.setItem('sidebar-collapsed', '1');
+          location.href = '/dashboard';
+          return;
+        }        
+        
+        if (row.kind === 'empty') {
+          localStorage.setItem('sidebar-collapsed', '1');
+          location.href = `/` + (openInNewTab ? `?empty=1&newtab=1` : `?empty=1`);
+          return;
+        }
+
+        if (row.kind === 'create') {
+          const createEl = qsResults.querySelector('.ac-create');
+          if (createEl) createEl.click();
+        } else if (row.kind === 'note') {
+          const currentIsNote = window.NOTE_ID && /^\d+$/.test(String(window.NOTE_ID));
+          let swapped = false;
+          if (!openInNewTab && currentIsNote && typeof window.__swapNoteInPlace === 'function') {
+            const ok = await window.__swapNoteInPlace(Number(row.id));
+            if (ok) { swapped = true; closeQs(); }
+          }
+          if (!swapped) {
+            location.href = openInNewTab ? `/?note=${row.id}&newtab=1` : `/?note=${row.id}`;
+          }
+        } else if (row.kind === 'search') {
+          const search = qsSearches.find(s => s.id === row.id);
+          if (search) {
+            const url = new URL('/', location.origin);
+            const p = new URLSearchParams(search.params || '');
+            p.set('search', search.id);
+            url.search = p.toString();
+            location.href = url.toString();
+          }
+        } else if (row.kind === 'block') {
+          location.href = `/?note=${row.note_id}&block=${row.block_id}`;
+        }
+
+        localStorage.setItem('sidebar-collapsed', '1');
+      } else if (e.key === 'Escape') {
+        closeQs();
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        openQs(false);
+      }
+    });
+
+    // Exposed for the "+" tab button
+    window.__openQuickSwitcherInNewTab = () => openQs(true);
+  }
+
+  // ---------- Parent picker ----------
+  const ppBtn = document.getElementById('parent-picker-btn');
+  const ppModal = document.getElementById('parent-picker-modal');
+  const ppInput = document.getElementById('pp-input');
+  const ppResults = document.getElementById('pp-results');
+
+  if (ppBtn && ppModal && ppInput && ppResults) {
+    let ppIndex = 0;
+    let ppItems = [];
+    let ppTimer = null;
+
+    function closePp() {
+      ppModal.classList.remove('open');
+      ppResults.innerHTML = '';
+    }
+
+    async function goAfterMove() {
+      // No navigation — the note was moved in place. Just refresh
+      // the outline and sidebar so the tree and "children" reflect
+      // the new parent.
+      if (typeof window.__refreshOutline === 'function') {
+        try { await window.__refreshOutline(); } catch (e) {}
+      }
+      if (typeof window.__refreshTree === 'function') {
+        try { await window.__refreshTree(); } catch (e) {}
+      }
+    }
+
+    async function doSingleMove(targetId) {
+      const parent_id = targetId === 0 ? null : targetId;
+      const r = await fetch(`/note/${window.NOTE_ID}/move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_id }),
+      });
+      if (r.ok) {
+        closePp();
+        // Update parent label from the tree (the swap path uses the
+        // same helper, but here we aren't swapping — we're mutating
+        // the current note in place, so set the label directly).
+        const ppLabel = document.getElementById('parent-picker-label');
+        if (ppLabel) {
+          if (parent_id === null) {
+            ppLabel.textContent = 'Top level';
+          } else {
+            const newParentLink = document.querySelector(`.tree-link[data-note-id="${parent_id}"] .tree-label`);
+            ppLabel.textContent = newParentLink ? newParentLink.textContent : ppLabel.textContent;
+          }
+        }
+        // Toggle the go-to-parent arrow based on the new parent.
+        const gotoBtn = document.getElementById('go-to-parent-btn');
+        if (gotoBtn) gotoBtn.style.display = parent_id === null ? 'none' : '';
+        await goAfterMove();
+      } else {
+        const d = await r.json().catch(() => ({}));
+        alert(d.error || 'Move failed');
+      }
+    }
+
+    async function doCreateAndMove(title) {
+      if (!title) return;
+      try {
+        const cr = await fetch('/note/create-by-title', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title }),
+        });
+        const cd = await cr.json();
+        if (!cd.ok || !cd.id) {
+          alert(cd.error || 'Could not create note');
+          return;
+        }
+        const mr = await fetch(`/note/${window.NOTE_ID}/move`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parent_id: cd.id }),
+        });
+        if (!mr.ok) {
+          const md = await mr.json().catch(() => ({}));
+          alert(md.error || 'Move failed');
+          return;
+        }
+        closePp();
+        goAfterMove();
+      } catch (e) {
+        alert('Move failed: ' + e.message);
+      }
+    }
+
+    const ppRender = () => {
+      const topLevel = { id: 0, title: 'Top level' };
+      const inputVal = ppInput.value.trim();
+
+      let createOffer = null;
+      if (inputVal) {
+        const exact = ppItems.some(n =>
+          (n.title || '').toLowerCase() === inputVal.toLowerCase()
+        );
+        if (!exact) createOffer = inputVal;
+      }
+
+      const rows = [topLevel, ...ppItems];
+      ppResults.innerHTML =
+        (createOffer
+          ? `<div class="ac-item ac-create${ppIndex === 0 ? ' sel' : ''}" data-create="1">
+               <span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px">add</span>
+               Create "${escapeHtmlBasic(createOffer)}" and move here
+             </div>`
+          : '') +
+        rows.map((n, i) => {
+          const rowIdx = createOffer ? i + 1 : i;
+          return `<div class="ac-item${rowIdx === ppIndex ? ' sel' : ''}" data-id="${n.id}">${escapeHtmlBasic(n.title)}</div>`;
+        }).join('');
+
+      ppResults.querySelectorAll('.ac-item').forEach(el => {
+        el.addEventListener('mousedown', async (ev) => {
+          ev.preventDefault();
+          if (el.dataset.create) {
+            await doCreateAndMove(ppInput.value.trim());
+          } else {
+            await doSingleMove(Number(el.dataset.id));
+          }
+        });
+      });
+    };
+
+    const ppFetch = async (q) => {
+      const r = await fetch(`/api/notes?q=${encodeURIComponent(q)}&limit=20&exclude=${window.NOTE_ID}`);
+      ppItems = await r.json();
+      ppIndex = 0;
+      ppRender();
+    };
+
+    const openPp = () => {
+      ppModal.classList.add('open');
+      
+      // Update the "Current parent" label
+      const currentParentEl = document.getElementById('pp-current-parent');
+      const labelEl = document.getElementById('parent-picker-label');
+      if (currentParentEl && labelEl) {
+        currentParentEl.textContent = labelEl.textContent.trim();
+      }
+
+      ppInput.value = '';
+      ppIndex = 0;
+      setTimeout(() => ppInput.focus(), 60);
+      ppFetch('');
+    };
+
+    ppBtn.addEventListener('click', openPp);
+    ppModal.querySelectorAll('[data-close]').forEach(el => {
+      el.addEventListener('click', closePp);
+    });
+
+    ppInput.addEventListener('input', () => {
+      clearTimeout(ppTimer);
+      ppTimer = setTimeout(() => ppFetch(ppInput.value.trim()), 80);
+    });
+
+    ppInput.addEventListener('keydown', async (e) => {
+      const hasCreate = !!ppResults.querySelector('.ac-create');
+      const totalRows = (hasCreate ? 1 : 0) + 1 + ppItems.length;
+      if (e.key === 'ArrowDown') {
+        ppIndex = Math.min(ppIndex + 1, totalRows - 1);
+        ppRender();
+        e.preventDefault();
+      } else if (e.key === 'ArrowUp') {
+        ppIndex = Math.max(ppIndex - 1, 0);
+        ppRender();
+        e.preventDefault();
+      } else if (e.key === 'Enter') {
+        if (hasCreate && ppIndex === 0) {
+          await doCreateAndMove(ppInput.value.trim());
+          e.preventDefault();
+          return;
+        }
+        const shift = hasCreate ? 1 : 0;
+        const rowIdx = ppIndex - shift;
+        if (rowIdx === 0) {
+          await doSingleMove(0);
+        } else {
+          const item = ppItems[rowIdx - 1];
+          if (item) await doSingleMove(item.id);
+        }
+        e.preventDefault();
+      } else if (e.key === 'Escape') {
+        closePp();
+      }
+    });
+  }
+
+  // ---------- Test ntfy ----------
+  const testNtfyBtn = document.getElementById('test-ntfy-btn');
+  const ntfyStatus = document.getElementById('ntfy-status');
+  const ntfyUrlInput = document.getElementById('ntfy-url');
+  if (testNtfyBtn && ntfyStatus && ntfyUrlInput) {
+    testNtfyBtn.addEventListener('click', async () => {
+      const url = ntfyUrlInput.value.trim();
+      if (!url) {
+        ntfyStatus.textContent = 'Enter a URL first.';
+        ntfyStatus.style.color = 'var(--danger)';
+        return;
+      }
+      ntfyStatus.textContent = 'Sending…';
+      ntfyStatus.style.color = 'var(--text-dim)';
+      try {
+        const r = await fetch('/settings/test-ntfy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        const data = await r.json();
+        if (data.ok) {
+          ntfyStatus.textContent = '✓ Sent successfully';
+          ntfyStatus.style.color = 'var(--accent)';
+        } else {
+          ntfyStatus.textContent = '✗ ' + (data.error || 'Failed');
+          ntfyStatus.style.color = 'var(--danger)';
+        }
+      } catch (e) {
+        ntfyStatus.textContent = '✗ ' + e.message;
+        ntfyStatus.style.color = 'var(--danger)';
+      }
+    });
+  }
+
+  // ============================================================
+  // Sidebar tree helpers
+  // ============================================================
+  const childrenSortBy = document.getElementById('children-sort-by');
+  const childrenSortDir = document.getElementById('children-sort-dir');
+
+  function syncSortControls(sort_by, sort_dir) {
+    if (childrenSortBy && childrenSortBy.value !== sort_by) childrenSortBy.value = sort_by;
+    if (childrenSortDir && childrenSortDir.value !== sort_dir) childrenSortDir.value = sort_dir;
+  }
+
+  async function applySort({ sort_by, sort_dir, sourceId }) {
+    const sourceStr = (sourceId === null || sourceId === undefined) ? '' : String(sourceId);
+    const rootStr = (typeof window !== 'undefined' && window.ROOT_ID != null)
+      ? String(window.ROOT_ID)
+      : '';
+    const isRoot = (sourceStr === '' || (rootStr !== '' && sourceStr === rootStr));
+
+    await fetch('/sort', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sort_by,
+        sort_dir,
+        source_id: isRoot ? null : sourceId,
+      }),
+    });
+    
+    // If we sorted the note we are currently looking at, or if we sorted Root
+    // while looking at Root, a reload is the fastest way to refresh the outline.
+    if (window.NOTE_ID && (String(window.NOTE_ID) === sourceStr || (isRoot && String(window.NOTE_ID) === rootStr))) {
+      location.reload();
+      return;
+    }
+
+    syncSortControls(sort_by, sort_dir);
+    if (isRoot) {
+      await softUpdateTopLevel();
+    } else {
+      await softUpdateChildren(sourceId);
+    }
+  }
+
+  async function pushChildrenSort() {
+    if (document.activeElement && document.activeElement.blur) {
+      document.activeElement.blur();
+    }
+    const sourceId = window.NOTE_ID ? String(window.NOTE_ID) : null;
+    await applySort({
+      sort_by: childrenSortBy?.value || 'modified',
+      sort_dir: childrenSortDir?.value || 'asc',
+      sourceId,
+    });
+  }
+
+  if (childrenSortBy) childrenSortBy.addEventListener('change', pushChildrenSort);
+  if (childrenSortDir) childrenSortDir.addEventListener('change', pushChildrenSort);
+
+  function iconFor(child) {
+    if (child.is_template) return 'bookmark';
+    if (child.is_map_note) return 'map';
+    if (child.has_children) return 'folder';
+    return 'description';
+  }
+
+  function buildTreeNode(child, sortBy, sortDir) {
+    const li = document.createElement('li');
+    li.className = 'tree-node';
+    li.dataset.noteId = String(child.id);
+
+    const row = document.createElement('div');
+    row.className = 'tree-row';
+
+    const checkbox = document.createElement('span');
+    checkbox.className = 'tree-checkbox';
+    checkbox.dataset.selectToggle = '';
+    checkbox.innerHTML = '<span class="material-symbols-rounded">check_box_outline_blank</span>';
+    row.appendChild(checkbox);
+
+    const hasKids = child.has_children && child.has_children !== 'false';
+    // Removed the arrow button creation entirely
+
+    const a = document.createElement('a');
+    a.className = 'tree-link';
+    a.href = `/?note=${child.id}`;
+    a.dataset.noteId = String(child.id);
+    a.title = child.title;
+    
+    // Add the data-action to the icon if it has children
+    const iconHtml = `<span class="material-symbols-rounded note-icon ${hasKids ? 'tree-folder-icon' : ''}" 
+                            ${hasKids ? `data-action="toggle-node" data-note-id="${child.id}"` : ''}>
+                        ${iconFor(child)}
+                      </span>`;
+                      
+    a.innerHTML = iconHtml + `<span class="tree-label"></span>`;
+    a.querySelector('.tree-label').textContent = child.title;
+    row.appendChild(a);
+
+    const addBtn = document.createElement('button');
+    addBtn.className = 'row-btn';
+    addBtn.dataset.action = 'new-note';
+    addBtn.dataset.parentId = String(child.id);
+    addBtn.title = 'New child note';
+    addBtn.innerHTML = '<span class="material-symbols-rounded">add</span>';
+    row.appendChild(addBtn);
+
+    const moreBtn = document.createElement('button');
+    moreBtn.className = 'row-btn';
+    moreBtn.dataset.action = 'note-menu';
+    moreBtn.dataset.noteId = String(child.id);
+    moreBtn.dataset.current = child.title;
+    moreBtn.title = 'More';
+    moreBtn.innerHTML = '<span class="material-symbols-rounded">more_vert</span>';
+    row.appendChild(moreBtn);
+
+    if (child.has_children) {
+      const sortBtn = document.createElement('button');
+      sortBtn.className = 'row-btn';
+      sortBtn.dataset.action = 'sort-folder';
+      sortBtn.dataset.noteId = String(child.id);
+      sortBtn.dataset.sortBy = sortBy;
+      sortBtn.dataset.sortDir = sortDir;
+      sortBtn.title = 'Sort children';
+      sortBtn.innerHTML = '<span class="material-symbols-rounded"></span>';
+      sortBtn.style.display = 'none';
+      row.appendChild(sortBtn);
+    }
+
+    li.appendChild(row);
+    
+    // Instead of nesting the UL directly inside the LI, we wrap it in a div.
+    if (child.has_children) {
+      const ul = document.createElement('ul');
+      ul.className = 'tree-list nested';
+      li.appendChild(ul);
+    }
+    
+    if (expanded.has(String(child.id))) li.classList.add('expanded');
+    return li;
+  }
+  
+  function buildOutlineNodeHTML(node) {
+    const isParent = node.has_children === true;
+    const hasContent = node.content && node.content.trim() !== '';
+    
+    // Check if this is one of our custom virtual folders
+    const isCustom = ['pinned-section', 'recent-section', 'saved-search-section'].includes(String(node.id));
+
+    const props = node.properties || {};
+    const lat = props.latitude || props.lat || '';
+    const lng = props.longitude || props.lng || '';
+    const coordAttrs = (lat && lng) ? ` data-lat="${lat}" data-lng="${lng}"` : '';
+
+    let html = `<div class="outline-node" data-note-id="${node.id}"${coordAttrs}>`;
+    html += `<div class="outline-head">`;
+
+    // Folder icon for parents (or custom notes), document icon for leaves
+    const iconName = (isParent || isCustom) ? 'folder' : 'description';
+    
+    // If it's a custom note, we don't add the "toggle-outline" action to the icon, 
+    // because clicking the title will just open the custom page.
+    const actionAttrs = (isParent && !isCustom)
+      ? `data-action="toggle-outline" data-note-id="${node.id}" title="Fold / unfold children"`
+      : '';
+      
+    const extraClass = (isParent || isCustom) ? ' outline-folder-icon' : '';
+    
+    html += `<span class="material-symbols-rounded${extraClass}" ${actionAttrs} style="color: var(--text-faint); flex-shrink: 0; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;">${iconName}</span>`;
+
+    const safeTitle = String(node.title || '').replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+
+    html += `<a href="/?note=${node.id}" class="outline-title" title="${safeTitle}">${safeTitle}</a>`;
+
+    // The + button (hide for custom notes)
+    if (!isCustom) {
+      html += `<button type="button" class="row-btn outline-add-btn" data-outline-add-child="${node.id}" title="New child note"><span class="material-symbols-rounded">add</span></button>`;
+      html += `<button type="button" class="row-btn outline-menu-btn" data-action="note-menu" data-note-id="${node.id}" data-current="${safeTitle}" title="More"><span class="material-symbols-rounded">more_vert</span></button>`;
+    }
+
+    // The "toggle body" button (hide for custom notes)
+    if (hasContent && !isCustom) {
+      html += `<button type="button" class="row-btn outline-body-btn" data-action="toggle-outline-body" data-note-id="${node.id}" title="Show / hide note body"><span class="material-symbols-rounded">unfold_more</span></button>`;
+    }
+
+    html += `</div><div class="outline-sub">`;
+
+    if (hasContent && !isCustom) {
+      const safeContent = String(node.content).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      html += `<div class="outline-body-wrap"><div class="outline-body" data-markdown="${safeContent}"></div></div>`;
+    }
+
+    if (isParent || isCustom) {
+      html += `<div class="outline-children" data-lazy-children="${node.id}"></div>`;
+    }
+
+    html += `</div></div>`;
+    return html;
+  }
+  
+  function wireTreeNode(li) {
+    li.querySelectorAll('.tree-arrow[data-action="toggle-node"]').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const node = btn.closest('.tree-node');
+        const id = node.dataset.noteId;
+        const isOpen = node.classList.toggle('expanded');
+        if (isOpen) expanded.add(id);
+        else expanded.delete(id);
+        saveExpanded(expanded);
+
+        // Lazy-load children the first time this node is expanded.
+        // Without this, nodes re-created by softUpdateTopLevel() show
+        // an expanded chevron but an empty <ul>.
+        if (isOpen) {
+          const ul = node.querySelector(':scope > .tree-list.nested');
+          if ((!ul || ul.children.length === 0) && typeof softUpdateChildren === 'function') {
+            await softUpdateChildren(id);
+          }
+        }
+      });
+    });
+    li.querySelectorAll('.row-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const action = btn.dataset.action;
+        if (action === 'rename-note') {
+          const id = btn.dataset.noteId;
+          const current = btn.dataset.current || '';
+          const nv = prompt('New name:', current);
+          if (nv === null) return;
+          const trimmed = nv.trim();
+          if (!trimmed || trimmed === current) return;
+          await fetch(`/note/${id}/rename`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: trimmed }),
+          });
+          document.querySelectorAll(`.tree-link[data-note-id="${id}"]`).forEach(a => {
+            const label = a.querySelector('.tree-label');
+            if (label) label.textContent = trimmed;
+            // Update the data-current on ALL buttons for this note
+            a.closest('.tree-node')?.querySelectorAll('.row-btn').forEach(btn => {
+              if (btn.dataset.current !== undefined) {
+                btn.dataset.current = trimmed;
+              }
+            });
+          });
+          if (String(window.NOTE_ID) === String(id)) {
+            const t = document.getElementById('note-title');
+            if (t) t.value = trimmed;
+          }
+        } else if (action === 'new-note' || action === 'add-child') {
+          const parentId = btn.dataset.parentId ?? btn.dataset.noteId ?? '';
+          openNewNoteModal(parentId);
+        } else if (action === 'note-menu') {
+          openNoteMenuPopover(btn);
+        } else if (action === 'sort-folder') {
+          openFolderSortPopover(btn);
+        }
+      });
+    });
+  }
+
+  async function softUpdateChildren(folderId) {
+    let data;
+    try {
+      const r = await fetch(`/note/${folderId}/children`);
+      if (!r.ok) throw new Error('fetch failed');
+      data = await r.json();
+    } catch (e) {
+      console.warn('softUpdateChildren failed', e);
+      return;
+    }
+
+    const node = document.querySelector(`.tree-node[data-note-id="${folderId}"]`);
+    if (!node) return;
+
+    let ul = node.querySelector(':scope > .tree-list.nested');
+    const row = node.querySelector(':scope > .tree-row');
+
+    if (data.children.length === 0) {
+      if (ul) ul.remove();
+      const arrow = row?.querySelector('.tree-arrow');
+      if (arrow) {
+        arrow.classList.add('empty');
+        delete arrow.dataset.action;
+      }
+      // Clear folder-icon affordance: the note is now a leaf.
+      const iconEl = row?.querySelector('.tree-folder-icon');
+      if (iconEl) {
+        iconEl.classList.remove('tree-folder-icon');
+        delete iconEl.dataset.action;
+        delete iconEl.dataset.noteId;
+        iconEl.textContent = 'description';
+      }
+      row?.querySelector('[data-action="sort-folder"]')?.remove();
+    } else {
+      if (!ul) {
+        ul = document.createElement('ul');
+        ul.className = 'tree-list nested';
+        node.appendChild(ul);
+      }
+      const arrow = row?.querySelector('.tree-arrow');
+      if (arrow) {
+        arrow.classList.remove('empty');
+        arrow.dataset.action = 'toggle-node';
+        arrow.dataset.noteId = String(folderId);
+      }
+      let sortBtn = row?.querySelector('[data-action="sort-folder"]');
+      if (!sortBtn && row) {
+        sortBtn = document.createElement('button');
+        sortBtn.className = 'row-btn';
+        sortBtn.dataset.action = 'sort-folder';
+        sortBtn.dataset.noteId = String(folderId);
+        sortBtn.title = 'Sort children';
+        sortBtn.innerHTML = '<span class="material-symbols-rounded"></span>';
+        sortBtn.style.display = 'none';
+        sortBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openFolderSortPopover(sortBtn);
+        });
+        row.appendChild(sortBtn);
+      }
+      if (sortBtn) {
+        sortBtn.dataset.sortBy = data.sort_by;
+        sortBtn.dataset.sortDir = data.sort_dir;
+      }
+
+      const existing = new Map();
+      [...ul.children].forEach(li => {
+        const id = li.dataset.noteId;
+        if (id) existing.set(id, li);
+      });
+      let cursor = null;
+      data.children.forEach(child => {
+        const id = String(child.id);
+        let li = existing.get(id);
+        if (li) {
+          existing.delete(id);
+
+          // Detect structural changes — has_children flipped, icon
+          // needs to change, nested <ul> needs to appear/disappear.
+          // The safest fix is to rebuild the node so we don't have to
+          // replicate all of buildTreeNode's DOM shape here.
+          const renderedChildren = li.querySelector(':scope > .tree-list.nested');
+          const renderedHasKids = renderedChildren !== null;
+          const incomingHasKids = !!child.has_children;
+
+          if (renderedHasKids !== incomingHasKids) {
+            const fresh = buildTreeNode(child, data.sort_by, data.sort_dir);
+            wireTreeNode(fresh);
+            if (child.has_children && expanded.has(String(child.id))) {
+              fresh.classList.add('expanded');
+              setTimeout(() => softUpdateChildren(child.id), 0);
+            }
+            li.replaceWith(fresh);
+            li = fresh;
+          } else {
+            // Same shape — just refresh the title & button metadata.
+            const label = li.querySelector(':scope > .tree-row > .tree-link > .tree-label');
+            if (label) label.textContent = child.title;
+            const rn = li.querySelector(':scope > .tree-row > .tree-link > [data-action="rename-note"]');
+            if (rn) rn.dataset.current = child.title;
+            const menuBtn = li.querySelector(':scope > .tree-row > .row-btn[data-action="note-menu"]');
+            if (menuBtn) menuBtn.dataset.current = child.title;
+          }
+        } else {
+          li = buildTreeNode(child, data.sort_by, data.sort_dir);
+          wireTreeNode(li);
+          // Newly-built nodes that are supposed to be expanded need
+          // their children fetched too, otherwise the <ul> stays empty.
+          if (child.has_children && expanded.has(String(child.id))) {
+            li.classList.add('expanded');
+            setTimeout(() => softUpdateChildren(child.id), 0);
+          }
+        }
+        if (cursor) cursor.after(li);
+        else ul.prepend(li);
+        cursor = li;
+      });
+      existing.forEach(li => li.remove());
+    }
+
+    if (String(window.NOTE_ID) === String(folderId)) {
+      const list = document.querySelector('.children-drawer .children-list');
+      if (list) {
+        list.innerHTML = '';
+        data.children.forEach(child => {
+          const a = document.createElement('a');
+          a.href = `/?note=${child.id}&parent=${folderId}`;
+          a.className = 'child-card';
+          const icon = document.createElement('span');
+          icon.className = 'material-symbols-rounded child-icon';
+          icon.textContent = iconFor(child);
+          const text = document.createElement('div');
+          text.className = 'child-text';
+          const title = document.createElement('div');
+          title.className = 'child-title';
+          title.textContent = child.title;
+          text.appendChild(title);
+          if (child.preview) {
+            const p = document.createElement('div');
+            p.className = 'child-preview';
+            p.textContent = child.preview;
+            text.appendChild(p);
+          }
+          a.appendChild(icon);
+          a.appendChild(text);
+          list.appendChild(a);
+        });
+      }
+      syncSortControls(data.sort_by, data.sort_dir);
+    }
+  }
+
+  async function softUpdateTopLevel() {
+    let data;
+    try {
+      const r = await fetch('/top-level');
+      if (!r.ok) throw new Error('fetch failed');
+      data = await r.json();
+    } catch (e) {
+      console.warn('softUpdateTopLevel failed', e);
+      return;
+    }
+
+    const ul = document.querySelector('.tree-list.root-level');
+    if (!ul) return;
+    const rootLi = ul.querySelector(':scope > .root-item');
+
+    // Remove existing virtual notes to prevent duplicates
+    ul.querySelectorAll('.tree-node[data-note-id^="pinned-"], .tree-node[data-note-id^="recent-"], .tree-node[data-note-id^="saved-"]').forEach(n => n.remove());
+
+    const existing = new Map();
+    [...ul.children].forEach(li => {
+      if (li === rootLi) return;
+      const id = li.dataset.noteId;
+      if (id) existing.set(id, li);
+    });
+
+    let cursor = rootLi;
+    data.children.forEach(child => {
+      const id = String(child.id);
+      let li = existing.get(id);
+      if (li) {
+        existing.delete(id);
+        const label = li.querySelector(':scope > .tree-row > .tree-link > .tree-label');
+        if (label) label.textContent = child.title;
+      } else {
+        li = buildTreeNode(child, data.sort_by, data.sort_dir);
+        wireTreeNode(li);
+        
+        // NEW: If this is a custom note, ensure it gets the custom-virtual-note class
+        if (child.is_custom) {
+          li.classList.add('custom-virtual-note');
+        }
+
+        if (child.has_children && expanded.has(String(child.id))) {
+          li.classList.add('expanded');
+          const subUl = li.querySelector('.tree-list.nested');
+          if (subUl) subUl.style.display = 'block';
+          setTimeout(() => softUpdateChildren(child.id), 0);
+        }
+      }
+      if (cursor.nextSibling !== li) {
+        cursor.after(li);
+      }
+      cursor = li;
+    });
+    existing.forEach(li => li.remove());
+
+    const rootSortBtn = rootLi?.querySelector('[data-action="sort-folder"]');
+    if (rootSortBtn) {
+      rootSortBtn.dataset.sortBy = data.sort_by;
+      rootSortBtn.dataset.sortDir = data.sort_dir;
+    }
+  }
+
+  async function refreshVisibleTree(specificFolderId) {
+    const sidebarBody = document.querySelector('.sidebar-body');
+    const savedScroll = sidebarBody ? sidebarBody.scrollTop : 0;
+    await refreshPinnedSidebar();
+    await softUpdateTopLevel();
+    if (window.NOTE_ID) {
+      const node = document.querySelector(`.tree-node[data-note-id="${window.NOTE_ID}"]`);
+      if (node) {
+        const parentLi = node.parentElement?.closest('.tree-node[data-note-id]');
+        if (parentLi) await softUpdateChildren(parentLi.dataset.noteId);
+      }
+    }
+    if (specificFolderId) {
+      await softUpdateChildren(specificFolderId);
+    }
+    if (sidebarBody && sidebarBody.scrollTop !== savedScroll) {
+      sidebarBody.scrollTop = savedScroll;
+    }
+  }
+  
+  async function refreshPinnedSidebar() {
+    try {
+      const r = await fetch('/api/pinned', { cache: 'no-store' });
+      if (!r.ok) return;
+      const data = await r.json();
+      
+      const pinnedList = document.getElementById('pinned-list');
+      const pinnedSection = document.getElementById('pinned-section');
+      if (!pinnedList || !pinnedSection) return;
+
+      if (!data.pinned || data.pinned.length === 0) {
+        pinnedSection.style.display = 'none';
+        pinnedList.innerHTML = '';
+        return;
+      }
+
+      pinnedSection.style.display = 'block';
+      pinnedList.innerHTML = '';
+      
+      data.pinned.forEach(pn => {
+        const li = document.createElement('li');
+        if (String(window.NOTE_ID) === String(pn.id)) li.classList.add('row-active');
+        
+        li.innerHTML = `
+          <div class="tree-row">
+            <span class="tree-arrow empty"></span>
+            <a href="/?note=${pn.id}" class="tree-link" data-note-id="${pn.id}">
+              <span class="material-symbols-rounded note-icon" style="color: var(--accent);">push_pin</span>
+              <span class="tree-label">${pn.title}</span>
+            </a>
+          </div>
+        `;
+        pinnedList.appendChild(li);
+      });
+    } catch (e) {
+      console.warn('Failed to refresh pinned sidebar', e);
+    }
+  }
+
+  // Hide Recent if it's empty on page load
+  (function() {
+    const recentSec = document.getElementById('recent-section');
+    if (recentSec && !recentSec.querySelector('#recent-list').children.length) {
+      recentSec.style.display = 'none';
+    }
+  })();
+  
+  window.__refreshTree = refreshVisibleTree;
+
+  // ---------- Folder sort popover ----------
+  let fspEl = null;
+  let fspFolderId = null;
+  let fspSortBy = 'modified';
+  let fspSortDir = 'asc';
+  let fspAnchor = null;
+
+  function closeFolderSortPopover() {
+    if (fspEl) { fspEl.remove(); fspEl = null; }
+    fspFolderId = null;
+    fspAnchor = null;
+  }
+
+  function renderFolderSortPopover() {
+    if (!fspEl) return;
+    fspEl.innerHTML = '';
+
+    const isPf = fspSortBy.endsWith('_pf');
+    const baseSortBy = isPf ? fspSortBy.slice(0, -3) : fspSortBy;
+
+    const byItems = [
+      ['modified', 'Modified'],
+      ['title', 'Title'],
+      ['created', 'Created'],
+      ['due', 'Due'],
+    ];
+    const dirItems = [
+      ['desc', '↓ Descending'],
+      ['asc', '↑ Ascending'],
+    ];
+
+    // ---------- Sort children by ----------
+    const h1 = document.createElement('div');
+    h1.className = 'fsp-section';
+    h1.textContent = 'Sort children by';
+    fspEl.appendChild(h1);
+
+    byItems.forEach(([val, label]) => {
+      const isSelected = val === baseSortBy;
+      const it = document.createElement('div');
+      it.className = 'fsp-item' + (isSelected ? ' sel' : '');
+      const ic = document.createElement('span');
+      ic.className = 'material-symbols-rounded';
+      ic.textContent = isSelected ? 'check' : '';
+      const tx = document.createElement('span');
+      tx.textContent = label;
+      it.appendChild(ic);
+      it.appendChild(tx);
+      it.addEventListener('click', () => {
+        fspSortBy = val + (isPf ? '_pf' : '');
+        applyFolderSort();
+      });
+      fspEl.appendChild(it);
+    });
+
+    // ---------- Direction ----------
+    const sep = document.createElement('div');
+    sep.className = 'fsp-sep';
+    fspEl.appendChild(sep);
+
+    const h2 = document.createElement('div');
+    h2.className = 'fsp-section';
+    h2.textContent = 'Direction';
+    fspEl.appendChild(h2);
+
+    dirItems.forEach(([val, label]) => {
+      const isSelected = val === fspSortDir;
+      const it = document.createElement('div');
+      it.className = 'fsp-item' + (isSelected ? ' sel' : '');
+      const ic = document.createElement('span');
+      ic.className = 'material-symbols-rounded';
+      ic.textContent = isSelected ? 'check' : '';
+      const tx = document.createElement('span');
+      tx.textContent = label;
+      it.appendChild(ic);
+      it.appendChild(tx);
+      it.addEventListener('click', () => {
+        fspSortDir = val;
+        applyFolderSort();
+      });
+      fspEl.appendChild(it);
+    });
+
+    // ---------- Folders first ----------
+    const sep2 = document.createElement('div');
+    sep2.className = 'fsp-sep';
+    fspEl.appendChild(sep2);
+
+    const pfItem = document.createElement('div');
+    pfItem.className = 'fsp-item' + (isPf ? ' sel' : '');
+    const pfIc = document.createElement('span');
+    pfIc.className = 'material-symbols-rounded';
+    pfIc.textContent = isPf ? 'check' : '';
+    const pfTx = document.createElement('span');
+    pfTx.textContent = 'Parents first';
+    pfItem.appendChild(pfIc);
+    pfItem.appendChild(pfTx);
+    pfItem.addEventListener('click', () => {
+      const newIsPf = !fspSortBy.endsWith('_pf');
+      fspSortBy = baseSortBy + (newIsPf ? '_pf' : '');
+      applyFolderSort();
+    });
+    fspEl.appendChild(pfItem);
+  }
+
+  async function applyFolderSort() {
+    renderFolderSortPopover();
+    const folderId = fspFolderId;
+    await applySort({
+      sort_by: fspSortBy,
+      sort_dir: fspSortDir,
+      sourceId: folderId,
+    });
+  }
+
+  function positionPopover(el, anchor) {
+    el.style.visibility = 'hidden';
+    el.style.display = 'block';
+    const r = anchor.getBoundingClientRect();
+    const w = el.offsetWidth || 200;
+    const h = el.offsetHeight || 200;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let left = r.right - w;
+    let top = r.bottom + 6;
+    if (left < 8) left = 8;
+    if (left + w > vw - 8) left = vw - w - 8;
+    if (top + h > vh - 8) top = Math.max(8, r.top - h - 6);
+    el.style.left = left + 'px';
+    el.style.top = top + 'px';
+    el.style.visibility = '';
+  }
+
+  function openFolderSortPopover(btn) {
+    if (fspAnchor === btn && fspEl) {
+      closeFolderSortPopover();
+      return;
+    }
+    closeFolderSortPopover();
+
+    fspAnchor = btn;
+    fspFolderId = btn.dataset.noteId || '';
+    fspSortBy = btn.dataset.sortBy || 'modified';
+    fspSortDir = btn.dataset.sortDir || 'asc';
+
+    fspEl = document.createElement('div');
+    fspEl.className = 'folder-sort-popover';
+    document.body.appendChild(fspEl);
+    renderFolderSortPopover();
+    positionPopover(fspEl, btn);
+
+    let justClosed = false;
+    
+    const onDocDown = (ev) => {
+      if (!fspEl) return;
+      if (fspEl.contains(ev.target)) return;
+      if (ev.target === fspAnchor || (fspAnchor && fspAnchor.contains(ev.target))) return;
+      
+      justClosed = true;
+      closeFolderSortPopover();
+      document.removeEventListener('mousedown', onDocDown, true);
+      document.removeEventListener('touchstart', onDocDown, true);
+    };
+
+    const preventGhostClick = (ev) => {
+      if (justClosed) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        justClosed = false;
+      }
+    };
+
+    setTimeout(() => {
+      document.addEventListener('mousedown', onDocDown, true);
+      document.addEventListener('touchstart', onDocDown, true);
+      document.addEventListener('click', preventGhostClick, true);
+    }, 0);
+  }
+
+  // ---------- Note menu popover (rename / move / delete) ----------
+  let nmpEl = null;
+  let nmpNoteId = null;
+  let nmpCurrentTitle = '';
+  let nmpAnchor = null;
+
+  function closeNoteMenuPopover() {
+    if (nmpEl) { nmpEl.remove(); nmpEl = null; }
+    nmpNoteId = null;
+    nmpAnchor = null;
+  }
+  
+  async function refreshSearchResultsSilently() {
+    if (!window.location.search.includes('search=') && !window.location.search.includes('q=') && !window.location.search.includes('prop_key=')) {
+      return; // We are not on a search page, do nothing
+    }
+    try {
+      const res = await fetch(window.location.href, { cache: 'no-store' });
+      const html = await res.text();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      
+      const newList = doc.getElementById('results-list-container');
+      const oldList = document.getElementById('results-list-container');
+      if (newList && oldList) {
+        oldList.innerHTML = newList.innerHTML;
+        
+        // Update the result count in the header
+        const newCount = doc.querySelector('.results-count');
+        const oldCount = document.querySelector('.results-count');
+        if (newCount && oldCount) oldCount.innerHTML = newCount.innerHTML;
+      }
+    } catch (e) {
+      console.error('Search refresh failed', e);
+    }
+  }  
+
+  function openNoteMenuPopover(btn) {
+    if (nmpAnchor === btn && nmpEl) {
+      closeNoteMenuPopover();
+      return;
+    }
+    closeNoteMenuPopover();
+
+    nmpAnchor = btn;
+    nmpNoteId = btn.dataset.noteId || '';
+    nmpCurrentTitle = btn.dataset.current || '';
+
+    // Capture lat/lng and map-note context for the optional "Show on map" item
+    const outlineNode = btn.closest('.outline-node');
+    const nodeLat = outlineNode?.dataset.lat || '';
+    const nodeLng = outlineNode?.dataset.lng || '';
+    const canShowOnMap = !!(nodeLat && nodeLng && window.IS_MAP_NOTE);
+
+    nmpEl = document.createElement('div');
+    nmpEl.className = 'folder-sort-popover';
+    document.body.appendChild(nmpEl);
+
+    // Sort children — only when this is a folder (has a nested tree in the sidebar)
+    const treeNode = btn.closest('.tree-node');
+    const hasNestedTree = !!(treeNode && treeNode.querySelector(':scope > .tree-list.nested'));
+    if (hasNestedTree) {
+      const sortBtn = treeNode.querySelector('[data-action="sort-folder"]');
+      const sortItem = document.createElement('div');
+      sortItem.className = 'fsp-item';
+      sortItem.innerHTML =
+        '<span class="material-symbols-rounded">sort</span>' +
+        '<span>Sort children…</span>';
+      sortItem.addEventListener('click', () => {
+        closeNoteMenuPopover();
+        if (sortBtn) {
+          // The sort button is hidden but its data attributes drive the popover
+          openFolderSortPopover(sortBtn);
+        }
+      });
+      nmpEl.appendChild(sortItem);
+    }
+
+    const renameItem = document.createElement('div');
+    renameItem.className = 'fsp-item';
+    renameItem.innerHTML =
+      '<span class="material-symbols-rounded">drive_file_rename_outline</span>' +
+      '<span>Rename</span>';
+    renameItem.addEventListener('click', async () => {
+      const id = nmpNoteId;
+      const cur = nmpCurrentTitle;
+      closeNoteMenuPopover();
+      if (!id) return;
+
+      const trimmed = await window.__openRenameModal(cur);
+      if (!trimmed || trimmed === cur) return;
+
+      await fetch(`/note/${id}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: trimmed }),
+      });
+
+      // Update the sidebar tree labels
+      document.querySelectorAll(`.tree-node[data-note-id="${id}"]`).forEach(node => {
+        const label = node.querySelector(':scope > .tree-row > .tree-link > .tree-label');
+        if (label) label.textContent = trimmed;
+        node.querySelectorAll(':scope > .tree-row > .row-btn').forEach(btn => {
+          if (btn.dataset.current !== undefined) btn.dataset.current = trimmed;
+        });
+      });
+
+      // Update the outline
+      document.querySelectorAll(`.outline-node[data-note-id="${id}"]`).forEach(node => {
+        const titleLink = node.querySelector(':scope > .outline-head > .outline-title');
+        if (titleLink) titleLink.textContent = trimmed;
+        const menuBtn = node.querySelector(':scope > .outline-head > .outline-menu-btn');
+        if (menuBtn) menuBtn.dataset.current = trimmed;
+      });
+
+      // If we renamed the current note, update the title input
+      if (String(window.NOTE_ID) === String(id)) {
+        const titleInput = document.getElementById('note-title');
+        if (titleInput) titleInput.value = trimmed;
+        if (typeof window.__refreshOutline === 'function') window.__refreshOutline();
+      }
+
+      // Smart refresh for search results
+      if (typeof refreshSearchResultsSilently === 'function') {
+        refreshSearchResultsSilently();
+      }
+    });
+    nmpEl.appendChild(renameItem);
+
+    const moveItem = document.createElement('div');
+    moveItem.className = 'fsp-item';
+    moveItem.innerHTML =
+      '<span class="material-symbols-rounded">drive_file_move</span>' +
+      '<span>Move…</span>';
+    moveItem.addEventListener('click', () => {
+      const id = nmpNoteId;
+      closeNoteMenuPopover();
+      if (!id) return;
+      openMovePickerForNote(id);
+      
+      // Smart refresh for search results (after move picker closes)
+      if (typeof refreshSearchResultsSilently === 'function') {
+        setTimeout(() => refreshSearchResultsSilently(), 1500);
+      }
+    });
+    nmpEl.appendChild(moveItem);
+    
+    // ── Show on map (only for child nodes with lat/lng in a map note's outline)
+    if (canShowOnMap) {
+      const showOnMapItem = document.createElement('div');
+      showOnMapItem.className = 'fsp-item';
+      showOnMapItem.innerHTML =
+        '<span class="material-symbols-rounded">pin_drop</span>' +
+        '<span>Show on map</span>';
+      showOnMapItem.addEventListener('click', () => {
+        closeNoteMenuPopover();
+
+        const onParentMapNote = window.IS_MAP_NOTE
+          && window.__mapInstance
+          && typeof window.__mapInstance.flyTo === 'function';
+
+        if (onParentMapNote) {
+          window.__mapInstance.flyTo(
+            [parseFloat(nodeLat), parseFloat(nodeLng)],
+            18,
+            { duration: 0.8 }
+          );
+          return;
+        }
+
+        localStorage.setItem('sidebar-collapsed', '1');
+        window.instantNavigate?.();
+        location.href = `/?note=${window.NOTE_ID}&focus_point=${nodeLat},${nodeLng}`;
+      });
+      nmpEl.appendChild(showOnMapItem);
+    }
+
+    const pinItem = document.createElement('div');
+    pinItem.className = 'fsp-item';
+    pinItem.innerHTML =
+      '<span class="material-symbols-rounded">push_pin</span>' +
+      '<span>Pin / Unpin</span>';
+    pinItem.addEventListener('click', async () => {
+      const id = nmpNoteId;
+      closeNoteMenuPopover();
+      if (!id) return;
+      
+      try {
+        const current = await fetch('/api/pinned').then(r => r.json());
+        let isPinned = false;
+        
+        if (current.ok && current.pinned) {
+          if (current.pinned.id && String(current.pinned.id) === String(id)) {
+            isPinned = true;
+          }
+          if (Array.isArray(current.pinned)) {
+            isPinned = current.pinned.some(p => String(p.id) === String(id));
+          }
+        }
+        
+        const isCurrentNote = String(window.NOTE_ID) === String(id);
+
+        if (isPinned) {
+          await fetch(`/api/pinned/unpin/${id}`, { method: 'POST' });
+        } else {
+          await fetch('/api/pinned', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: id })
+          });
+        }
+
+        if (isCurrentNote) {
+          const pinBtn = document.getElementById('pin-note-btn');
+          if (pinBtn) {
+            if (isPinned) {
+              pinBtn.classList.remove('primary');
+            } else {
+              pinBtn.classList.add('primary');
+            }
+          }
+        }
+
+        // Instantly refresh the sidebar tree to show/hide the pinned item
+        if (typeof window.__refreshTree === 'function') {
+          window.__refreshTree();
+        }
+        
+        // Smart refresh for search results
+        if (typeof refreshSearchResultsSilently === 'function') {
+          refreshSearchResultsSilently();
+        }
+      } catch (err) {
+        alert('Failed to toggle pin: ' + err.message);
+      }
+    });
+    nmpEl.appendChild(pinItem);    
+
+    const delItem = document.createElement('div');
+    delItem.className = 'fsp-item fsp-item-danger';
+    delItem.innerHTML =
+      '<span class="material-symbols-rounded">delete</span>' +
+      '<span>Delete</span>';
+    delItem.addEventListener('click', async () => {
+      const id = nmpNoteId;
+      closeNoteMenuPopover();
+      if (!id) return;
+      if (!confirm('Delete this note?')) return;
+
+      const isCurrent = String(window.NOTE_ID) === String(id);
+      let dest = null;
+
+      if (isCurrent) {
+        try {
+          const prev = sessionStorage.getItem('prev-note-id');
+          if (prev && String(prev) !== String(id)) {
+            dest = `/?note=${prev}`;
+          }
+        } catch (e) {}
+
+        if (!dest) {
+          try {
+            const tabs = JSON.parse(localStorage.getItem('open-tabs') || '[]');
+            const idx = tabs.findIndex(t => String(t.id) === String(id));
+            if (idx > 0) {
+              dest = `/?note=${tabs[idx - 1].id}`;
+            } else if (idx === 0 && tabs.length > 1) {
+              dest = `/?note=${tabs[idx + 1].id}`;
+            }
+          } catch (e) {}
+        }
+
+        if (!dest) {
+          dest = window.ROOT_ID ? `/?note=${window.ROOT_ID}` : '/';
+        }
+      }
+
+      removeNoteFromTabs(id);
+      removeNoteFromRecent(id);
+      if (typeof window.renderRecent === 'function') window.renderRecent();
+      await fetch(`/note/${id}/delete`, { method: 'POST' });
+
+      if (dest) {
+        // If we are deleting the CURRENT note, we do need to navigate away
+        localStorage.setItem('sidebar-collapsed', '0');
+        location.replace(dest + (dest.includes('?') ? '&' : '?') + 't=' + Date.now());
+      } else {
+        // If we delete a DIFFERENT note, just remove it from the sidebar instantly
+        document.querySelectorAll(`.tree-node[data-note-id="${id}"]`).forEach(n => n.remove());
+        
+        // Remove it from the outline instantly
+        document.querySelectorAll(`.outline-node[data-note-id="${id}"]`).forEach(n => n.remove());
+        
+        // Tell the app to silently refresh the background data
+        if (typeof window.__refreshTree === 'function') {
+          window.__refreshTree();
+        }
+        
+        // Smart refresh for search results
+        if (typeof refreshSearchResultsSilently === 'function') {
+          refreshSearchResultsSilently();
+        }
+      }
+    });
+    nmpEl.appendChild(delItem);
+
+    positionPopover(nmpEl, btn);
+
+    let justClosed = false;
+    
+    const onDocDown = (ev) => {
+      if (!nmpEl) return;
+      if (nmpEl.contains(ev.target)) return;
+      if (ev.target === nmpAnchor || (nmpAnchor && nmpAnchor.contains(ev.target))) return;
+      
+      justClosed = true;
+      closeNoteMenuPopover();
+      document.removeEventListener('mousedown', onDocDown, true);
+      document.removeEventListener('touchstart', onDocDown, true);
+    };
+
+    const preventGhostClick = (ev) => {
+      if (justClosed) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        justClosed = false;
+      }
+    };
+
+    setTimeout(() => {
+      document.addEventListener('mousedown', onDocDown, true);
+      document.addEventListener('touchstart', onDocDown, true);
+      document.addEventListener('click', preventGhostClick, true);
+    }, 0);
+  }
+
+  function openMovePickerForNote(noteId, isSubtask = false) {
+    const modal = document.getElementById('note-move-modal');
+    const input = document.getElementById('nm-input');
+    const results = document.getElementById('nm-results');
+    if (!modal || !input || !results) {
+      alert('Move picker unavailable');
+      return;
+    }
+
+    let idx = 0;
+    let items = [];
+    let timer = null;
+
+    function closePicker() {
+      modal.classList.remove('open');
+      results.innerHTML = '';
+      input.removeEventListener('input', onInput);
+      input.removeEventListener('keydown', onKey);
+      modal.removeEventListener('click', onModalClick);
+    }
+
+    function goAfterMove() {
+      if (typeof window.__refreshTree === 'function') window.__refreshTree();
+      
+      // If we are in a search result, remove the moved note
+      const card = document.querySelector(`.result-card[data-note-id="${noteId}"]`);
+      if (card) card.remove();
+    }
+
+    async function fetchItems(q) {
+      const url = `/api/notes?q=${encodeURIComponent(q)}&limit=20&exclude=${noteId}`;
+      const r = await fetch(url);
+      items = await r.json();
+      idx = 0;
+      render();
+    }
+
+    function render() {
+      const topLevel = { id: 0, title: 'Top level' };
+      const inputVal = input.value.trim();
+
+      let createOffer = null;
+      if (inputVal) {
+        const exact = items.some(n =>
+          (n.title || '').toLowerCase() === inputVal.toLowerCase()
+        );
+        if (!exact) createOffer = inputVal;
+      }
+
+      const rows = [topLevel, ...items];
+      results.innerHTML =
+        (createOffer
+          ? `<div class="ac-item ac-create${idx === 0 ? ' sel' : ''}" data-create="1">
+               <span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px">add</span>
+               Create "${escapeHtmlBasic(createOffer)}" and move here
+             </div>`
+          : '') +
+        rows.map((n, i) => {
+          const rowIdx = createOffer ? i + 1 : i;
+          return `<div class="ac-item${rowIdx === idx ? ' sel' : ''}" data-id="${n.id}">${escapeHtmlBasic(n.title)}</div>`;
+        }).join('');
+
+      results.querySelectorAll('.ac-item').forEach(el => {
+        el.addEventListener('mousedown', async (ev) => {
+          ev.preventDefault();
+          if (el.dataset.create) {
+            await createAndMove(input.value.trim());
+          } else {
+            await choose(Number(el.dataset.id));
+          }
+        });
+      });
+    }
+
+    async function choose(targetId) {
+      const parent_id = targetId === 0 ? null : targetId;
+      
+      const endpoint = isSubtask 
+        ? `/api/note/${noteId}/make-subtask` 
+        : `/note/${noteId}/move`;
+
+      const r = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_id }),
+      });
+      if (r.ok) {
+        closePicker();
+        if (isSubtask) {
+          // Reload the page to reflect new properties and parent
+          location.reload();
+        } else {
+          goAfterMove();
+        }
+      } else {
+        const d = await r.json().catch(() => ({}));
+        alert(d.error || 'Move failed');
+      }
+    }
+
+    async function createAndMove(title) {
+      if (!title) return;
+      try {
+        const cr = await fetch('/note/create-by-title', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title }),
+        });
+        const cd = await cr.json();
+        if (!cd.ok || !cd.id) {
+          alert(cd.error || 'Could not create note');
+          return;
+        }
+        const mr = await fetch(`/note/${noteId}/move`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parent_id: cd.id }),
+        });
+        if (!mr.ok) {
+          const md = await mr.json().catch(() => ({}));
+          alert(md.error || 'Move failed');
+          return;
+        }
+        closePicker();
+        goAfterMove();
+      } catch (e) {
+        alert('Move failed: ' + e.message);
+      }
+    }
+
+    function onInput() {
+      clearTimeout(timer);
+      timer = setTimeout(() => fetchItems(input.value.trim()), 80);
+    }
+
+    function onKey(ev) {
+      const hasCreate = !!results.querySelector('.ac-create');
+      const totalRows = (hasCreate ? 1 : 0) + 1 + items.length;
+      if (ev.key === 'ArrowDown') {
+        idx = Math.min(idx + 1, totalRows - 1);
+        render();
+        ev.preventDefault();
+      } else if (ev.key === 'ArrowUp') {
+        idx = Math.max(idx - 1, 0);
+        render();
+        ev.preventDefault();
+      } else if (ev.key === 'Enter') {
+        if (hasCreate && idx === 0) {
+          createAndMove(input.value.trim());
+          ev.preventDefault();
+          return;
+        }
+        const shift = hasCreate ? 1 : 0;
+        const rowIdx = idx - shift;
+        if (rowIdx === 0) {
+          choose(0);
+        } else {
+          const item = items[rowIdx - 1];
+          if (item) choose(item.id);
+        }
+        ev.preventDefault();
+      } else if (ev.key === 'Escape') {
+        closePicker();
+      }
+    }
+
+    function onModalClick(ev) {
+      if (ev.target.closest('[data-close]')) closePicker();
+    }
+
+    modal.classList.add('open');
+    input.value = '';
+    idx = 0;
+    setTimeout(() => input.focus(), 60);
+    fetchItems('');
+    input.addEventListener('input', onInput);
+    input.addEventListener('keydown', onKey);
+    modal.addEventListener('click', onModalClick);
+  }
+  
+  // Toggle children in search results (and prevent opening the note)
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action="toggle-search-outline"]');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation(); // <--- This forces the card click to stop
+    
+    const card = btn.closest('.result-card');
+    if (!card) return;
+    
+    const children = card.querySelector(':scope > .result-children');
+    if (!children) return;
+    
+    const isExpanded = card.classList.toggle('expanded');
+    children.style.display = isExpanded ? 'flex' : 'none';
+  }, true); // <--- The 'true' here makes it run in the capture phase, before the card's click handler
+
+  // ---------- Sidebar tree links (delegated) ----------
+  const sidebarEl = document.querySelector('.sidebar');
+  if (sidebarEl) {
+    sidebarEl.addEventListener('click', (e) => {
+      const link = e.target.closest('.tree-link[data-note-id]');
+      if (!link) return;
+      
+      // CRITICAL: Ignore clicks on buttons, arrows, AND folder icons
+      if (e.target.closest('.row-btn, .tree-arrow, .tree-folder-icon')) return;
+      
+      // Ignore clicks on custom sections (Pinned/Recent/Searches) if we clicked the icon
+      const customId = link.getAttribute('data-note-id');
+      if (['pinned-section', 'recent-section', 'saved-search-section'].includes(customId) && e.target.closest('.tree-folder-icon')) {
+        return;
+      }
+
+      const targetId = link.getAttribute('data-note-id') || '';
+      const currentIsNote = window.NOTE_ID && /^\d+$/.test(String(window.NOTE_ID));
+      const targetIsNote  = targetId && /^\d+$/.test(String(targetId));
+      const isMobile = window.matchMedia('(max-width: 720px)').matches;
+
+      // Try in-place swap when both sides are plain notes.
+      if (currentIsNote && targetIsNote && typeof window.__swapNoteInPlace === 'function') {
+        e.preventDefault();
+        if (isMobile) instantCollapseBeforeNav();
+        window.__swapNoteInPlace(Number(targetId)).then((ok) => {
+          if (!ok) window.location.href = link.href;
+        });
+        return;
+      }
+
+      // Fallback: full navigation (search tab target, map note, etc.)
+      if (isMobile) {
+        e.preventDefault();
+        instantCollapseBeforeNav();
+        instantNavigate();
+        window.location.href = link.href;
+      }
+    }, true);
+  }
+
+  document.addEventListener('click', (e) => {
+    const inEditor = e.target.closest('.editor');
+    if (!inEditor) return;
+    
+    // 1. Close sidebar on mobile when clicking internal links
+    const internalLink = e.target.closest('.outline-title[href]');
+    if (internalLink) {
+      // Only handle `.outline-title` here (wikilinks have their own handlers).
+      const href = internalLink.getAttribute('href') || '';
+      const m = href.match(/[?&]note=(\d+)/);
+      const targetId = m ? m[1] : null;
+      const currentIsNote = window.NOTE_ID && /^\d+$/.test(String(window.NOTE_ID));
+
+      if (targetId && currentIsNote && typeof window.__swapNoteInPlace === 'function') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (window.matchMedia('(max-width: 720px)').matches) {
+          localStorage.setItem('sidebar-collapsed', '1');
+        }
+        window.__swapNoteInPlace(Number(targetId)).then((ok) => {
+          if (!ok) window.location.href = href;
+        });
+        return;
+      }
+
+      // Fallback: original behavior (mobile collapses sidebar only;
+      // the anchor navigates normally on its own).
+      if (window.matchMedia('(max-width: 720px)').matches) {
+        localStorage.setItem('sidebar-collapsed', '1');
+      }
+      return;
+    }
+
+    // Wikilinks are handled elsewhere — just close the sidebar on mobile.
+    const wikilink = e.target.closest('.wikilink, a[href^="wikilink:"]');
+    if (wikilink) {
+      if (window.matchMedia('(max-width: 720px)').matches) {
+        localStorage.setItem('sidebar-collapsed', '1');
+      }
+      return;
+    }
+
+    // 2. Force external HTTP links to open in a new tab
+    const externalLink = e.target.closest('a[href]');
+    if (externalLink) {
+      const href = externalLink.getAttribute('href');
+      if (href && /^https?:\/\//i.test(href)) {
+        externalLink.setAttribute('target', '_blank');
+        externalLink.setAttribute('rel', 'noopener noreferrer');
+      }
+    }
+  });
+
+  // ---------- Due badges ----------
+  document.querySelectorAll('.due-badge[data-utc]').forEach(el => {
+    const d = new Date(el.dataset.utc);
+    el.textContent = d.toLocaleString([], {
+      month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+    });
+  });
+
+  // ---------- Tree expanded state ----------
+  function loadExpanded() {
+    try { return new Set(JSON.parse(localStorage.getItem(TREE_KEY) || '[]')); }
+    catch { return new Set(); }
+  }
+  function saveExpanded(set) {
+    localStorage.setItem(TREE_KEY, JSON.stringify([...set]));
+  }
+
+  const expanded = loadExpanded();
+  document.querySelectorAll('.tree-node[data-note-id]').forEach(node => {
+    if (expanded.has(node.dataset.noteId)) node.classList.add('expanded');
+  });
+
+  const activeLink = document.querySelector('.tree-link.active[data-note-id]');
+  if (activeLink) {
+    let node = activeLink.closest('.tree-node');
+    while (node) {
+      node.classList.add('expanded');
+      expanded.add(node.dataset.noteId);
+      node = node.parentElement.closest('.tree-node');
+    }
+    saveExpanded(expanded);
+  }
+
+  // Use the stable sidebar container to catch clicks on folder icons
+  if (sidebarEl) {
+    sidebarEl.addEventListener('click', async (e) => {
+      const folderIcon = e.target.closest('.tree-folder-icon');
+      if (!folderIcon) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const id = folderIcon.dataset.noteId;
+      const node = folderIcon.closest('.tree-node');
+      if (!node || !id) return;
+
+      // 1. Toggle the visual state immediately based on DOM
+      const isExpanded = node.classList.contains('expanded');
+      const folderNowOpen = !isExpanded;
+      
+      node.classList.toggle('expanded', folderNowOpen);
+      
+      const ul = node.querySelector(':scope > .tree-list.nested');
+      if (ul) ul.style.display = folderNowOpen ? 'block' : 'none';
+
+      if (folderNowOpen) {
+        expanded.add(id);
+      } else {
+        expanded.delete(id);
+      }
+      saveExpanded(expanded);
+
+      // 2. If we are opening it, check if we need to fetch children
+      if (folderNowOpen) {
+        const isCustomSection = ['pinned-section', 'recent-section', 'saved-search-section'].includes(id);
+        
+        if (isCustomSection) {
+           // Force the list to be visible for custom sections
+           if (ul) ul.style.display = 'block';
+           // If it's recent and empty, build it right now
+           if (id === 'recent-section' && ul && ul.children.length === 0) {
+               if (typeof window.renderRecent === 'function') {
+                   window.renderRecent();
+               }
+           }
+        } else if (ul && ul.children.length === 0 && typeof softUpdateChildren === 'function') {
+           await softUpdateChildren(id);
+        }
+      }
+    }, true);
+  }
+
+  // Force recent list to populate immediately so it can be expanded
+  if (typeof window.renderRecent === 'function') {
+    window.renderRecent();
+  }
+
+  // Ensure Recent section has its children built so it can expand
+  const recentSec = document.getElementById('recent-section');
+  if (recentSec && !recentSec.dataset.recentBound) {
+    recentSec.dataset.recentBound = '1';
+    // If the list is empty, call renderRecent to fill it
+    const recentList = document.getElementById('recent-list');
+    if (recentList && recentList.children.length === 0) {
+      window.renderRecent();
+    }
+  }
+
+  // ---------- Sidebar scroll ----------
+  const sidebarBody = document.querySelector('.sidebar-body');
+  if (sidebarBody) {
+    requestAnimationFrame(() => {
+      const link = sidebarBody.querySelector('.tree-link.active[data-note-id]');
+      if (link) {
+        link.scrollIntoView({ block: 'center', behavior: 'auto' });
+      } else {
+        const saved = parseInt(sessionStorage.getItem(SIDEBAR_SCROLL_KEY) || '0', 10);
+        if (saved > 0) sidebarBody.scrollTop = saved;
+      }
+    });
+
+    let scrollSaveTimer = null;
+    sidebarBody.addEventListener('scroll', () => {
+      clearTimeout(scrollSaveTimer);
+      scrollSaveTimer = setTimeout(() => {
+        try {
+          sessionStorage.setItem(SIDEBAR_SCROLL_KEY, String(sidebarBody.scrollTop));
+        } catch (e) {}
+      }, 120);
+    }, { passive: true });
+  }
+
+  const foldBtn = document.getElementById('toggle-all-fold');
+  const foldIcon = document.getElementById('fold-icon');
+
+  function anyCollapsed() {
+    const nodes = document.querySelectorAll('.tree-node');
+    for (const n of nodes) {
+      if (n.querySelector('.tree-list.nested') && !n.classList.contains('expanded')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function updateFoldIcon() {
+    if (!foldIcon) return;
+    foldIcon.textContent = anyCollapsed() ? 'unfold_more' : 'unfold_less';
+  }
+  updateFoldIcon();
+
+  if (foldBtn) {
+    foldBtn.addEventListener('click', () => {
+      const shouldUnfold = anyCollapsed();
+      const allIds = new Set();
+      document.querySelectorAll('.tree-node[data-note-id]').forEach(n => {
+        if (n.querySelector('.tree-list.nested')) allIds.add(n.dataset.noteId);
+      });
+
+      if (shouldUnfold) {
+        allIds.forEach(id => expanded.add(id));
+        document.querySelectorAll('.tree-node[data-note-id]').forEach(n => {
+          if (allIds.has(n.dataset.noteId)) n.classList.add('expanded');
+        });
+        if (foldIcon) foldIcon.textContent = 'unfold_less';
+      } else {
+        expanded.clear();
+        document.querySelectorAll('.tree-node[data-note-id]').forEach(n => {
+          n.classList.remove('expanded');
+        });
+        if (foldIcon) foldIcon.textContent = 'unfold_more';
+      }
+      saveExpanded(expanded);
+    });
+  }
+
+  // ---------- Row buttons ----------
+  document.querySelectorAll('.row-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const action = btn.dataset.action;
+
+      if (action === 'rename-note') {
+        const id = btn.dataset.noteId;
+        const current = btn.dataset.current || '';
+        const nv = prompt('New name:', current);
+        if (nv === null) return;
+        const trimmed = nv.trim();
+        if (!trimmed || trimmed === current) return;
+
+        await fetch(`/note/${id}/rename`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: trimmed }),
+        });
+
+        document.querySelectorAll(`.tree-link[data-note-id="${id}"]`).forEach(a => {
+          const label = a.querySelector('.tree-label');
+          if (label) label.textContent = trimmed;
+          const rb = a.querySelector('[data-action="rename-note"]');
+          if (rb) rb.dataset.current = trimmed;
+        });
+
+        if (String(window.NOTE_ID) === String(id)) {
+          const t = document.getElementById('note-title');
+          if (t) t.value = trimmed;
+        }
+      } else if (action === 'new-note' || action === 'add-child') {
+        const parentId = btn.dataset.parentId ?? btn.dataset.noteId ?? '';
+        openNewNoteModal(parentId);
+      } else if (action === 'note-menu') {
+        openNoteMenuPopover(btn);
+      } else if (action === 'sort-folder') {
+        openFolderSortPopover(btn);
+      }
+    });
+  });
+
+  // ---------- Select mode (multi-select in the tree) ----------
+  const treeSection = document.querySelector('[data-tree-section]');
+  let selectMode = false;
+
+  function enterSelectMode() {
+    if (!treeSection || selectMode) return;
+    selectMode = true;
+    treeSection.classList.add('select-mode');
+    updateSelectBar();
+  }
+
+  function exitSelectMode() {
+    if (!treeSection || !selectMode) return;
+    selectMode = false;
+    treeSection.classList.remove('select-mode');
+    treeSection.querySelectorAll('.tree-node.selected').forEach(n => n.classList.remove('selected'));
+    updateSelectBar();
+  }
+
+  function selectedNoteIds() {
+    if (!treeSection) return [];
+    return [...treeSection.querySelectorAll('.tree-node.selected')]
+      .map(n => n.dataset.noteId)
+      .filter(Boolean);
+  }
+
+  function updateSelectBar() {
+    if (!treeSection) return;
+    const count = selectedNoteIds().length;
+    const cEl = treeSection.querySelector('.select-bar-count');
+    if (cEl) cEl.textContent = count + ' selected';
+
+    const delBtn = treeSection.querySelector('[data-select-action="delete"]');
+    if (delBtn) {
+      delBtn.disabled = (count === 0);
+      delBtn.style.opacity = (count === 0) ? '0.4' : '1';
+    }
+  }
+
+  function toggleSelectNode(node) {
+    if (!node) return;
+    node.classList.toggle('selected');
+    const cb = node.querySelector(':scope > .tree-row > [data-select-toggle] .material-symbols-rounded');
+    if (cb) {
+      cb.textContent = node.classList.contains('selected')
+        ? 'check_box'
+        : 'check_box_outline_blank';
+    }
+    updateSelectBar();
+  }
+
+  let longPressTimer = null;
+  let longPressTarget = null;
+  let suppressNextClick = false;
+  
+  if (treeSection) {
+    treeSection.addEventListener('touchstart', (e) => {
+      if (selectMode) return;
+      const row = e.target.closest('.tree-row');
+      if (!row) return;
+      if (e.target.closest('.row-btn, .tree-arrow, .tree-checkbox, .tree-folder-icon')) return;
+      
+      longPressTarget = row;
+      longPressTimer = setTimeout(() => {
+        longPressTimer = null;
+        suppressNextClick = true;
+        enterSelectMode();
+        const node = row.closest('.tree-node');
+        if (node) toggleSelectNode(node);
+      }, 500);
+    }, { passive: true });
+
+    const cancelLongPress = () => {
+      if (longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+    };
+
+    treeSection.addEventListener('touchend', cancelLongPress);
+    treeSection.addEventListener('touchcancel', cancelLongPress);
+    treeSection.addEventListener('touchmove', cancelLongPress);
+    
+    treeSection.addEventListener('contextmenu', (e) => {
+      if (e.target.closest('.tree-row')) {
+        e.preventDefault();
+      }
+    });
+
+    treeSection.addEventListener('click', (e) => {
+      const cb = e.target.closest('[data-select-toggle]');
+      if (cb) {
+        e.preventDefault();
+        e.stopPropagation();
+        const node = cb.closest('.tree-node');
+        toggleSelectNode(node);
+        return;
+      }
+
+      if (selectMode) {
+        const row = e.target.closest('.tree-row');
+        if (row && !e.target.closest('.row-btn, .tree-arrow')) {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleSelectNode(row.closest('.tree-node'));
+          return;
+        }
+        const link = e.target.closest('.tree-link');
+        if (link) {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleSelectNode(link.closest('.tree-node'));
+          return;
+        }
+        return;
+      }
+
+      if (suppressNextClick) {
+        suppressNextClick = false;
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
+
+    treeSection.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-select-action]');
+      if (!btn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const action = btn.dataset.selectAction;
+
+      if (action === 'cancel') {
+        exitSelectMode();
+        return;
+      }
+
+      if (action === 'all') {
+        const nodes = [...treeSection.querySelectorAll('.tree-node[data-note-id]')];
+        const allSelected = nodes.every(n => n.classList.contains('selected'));
+        nodes.forEach(n => {
+          if (allSelected) n.classList.remove('selected');
+          else n.classList.add('selected');
+          const cb = n.querySelector(':scope > .tree-row > [data-select-toggle] .material-symbols-rounded');
+          if (cb) cb.textContent = allSelected ? 'check_box_outline_blank' : 'check_box';
+        });
+        updateSelectBar();
+        return;
+      }
+
+      if (action === 'delete') {
+        const ids = selectedNoteIds();
+        if (!ids.length) return;
+        const msg = 'Delete ' + ids.length + ' note' + (ids.length === 1 ? '' : 's') +
+                    ' and all their descendants?';
+        if (!confirm(msg)) return;
+
+        const currentId = window.NOTE_ID;
+        const wasCurrentDeleted = currentId && ids.includes(String(currentId));
+
+        try {
+          const r = await fetch('/notes/bulk-delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids }),
+          });
+          const data = await r.json();
+          if (!data.ok) {
+            alert(data.error || 'Delete failed');
+            return;
+          }
+
+          const deletedList = data.deleted || ids;
+
+          // Compute destination AFTER we know what was actually deleted
+          let dest = null;
+          if (wasCurrentDeleted) {
+            // 1. Try session history — but only if that note wasn't deleted
+            try {
+              const prev = sessionStorage.getItem('prev-note-id');
+              if (prev && !deletedList.includes(parseInt(prev, 10)) && String(prev) !== String(currentId)) {
+                dest = `/?note=${prev}`;
+              }
+            } catch (e) {}
+
+            // 2. Tab bar fallback — find the most recent tab whose last-stack note wasn't deleted
+            if (!dest) {
+              try {
+                const tabs = JSON.parse(localStorage.getItem('open-tabs') || '[]');
+                const validTab = tabs.slice().reverse().find(t => {
+                  const stack = Array.isArray(t.stack) ? t.stack : [t.id];
+                  const lastNote = stack[stack.length - 1];
+                  return lastNote !== 'empty' && !deletedList.includes(parseInt(lastNote, 10));
+                });
+                if (validTab) {
+                  const stack = Array.isArray(validTab.stack) ? validTab.stack : [validTab.id];
+                  dest = `/?note=${stack[stack.length - 1]}`;
+                }
+              } catch (e) {}
+            }
+
+            // 3. Root fallback
+            if (!dest) {
+              dest = window.ROOT_ID ? `/?note=${window.ROOT_ID}` : '/';
+            }
+          }
+
+          deletedList.forEach(id => {
+            removeNoteFromTabs(id);
+            removeNoteFromRecent(id);
+          });
+          if (typeof window.renderRecent === 'function') window.renderRecent();   // <-- ADD THIS LINE
+
+          if (wasCurrentDeleted) {
+            location.replace(dest + (dest.includes('?') ? '&' : '?') + 't=' + Date.now());
+            return;
+          }
+          
+          deletedList.forEach(id => {
+            const n = treeSection.querySelector(`.tree-node[data-note-id="${id}"]`);
+            if (n) n.remove();
+          });
+          
+          exitSelectMode();
+          location.replace(location.pathname + location.search + (location.search ? '&' : '?') + 't=' + Date.now());
+        } catch (err) {
+          alert('Delete failed: ' + err.message);
+        }
+      }
+    }); // <--- Closes treeSection.addEventListener
+  }     // <--- Closes the if (treeSection) { block
+
+  // ---------- Outliner ----------
+  const OUTLINE_KEY = 'outline-collapsed';
+  const OUTLINE_BODY_OPEN_KEY = 'outline-body-open';
+
+  function loadOutlineCollapsed() {
+    try { return new Set(JSON.parse(localStorage.getItem(OUTLINE_KEY) || '[]')); }
+    catch { return new Set(); }
+  }
+  function saveOutlineCollapsed(set) {
+    localStorage.setItem(OUTLINE_KEY, JSON.stringify([...set]));
+  }
+
+  function loadOutlineBodyOpen() {
+    try { return new Set(JSON.parse(localStorage.getItem(OUTLINE_BODY_OPEN_KEY) || '[]')); }
+    catch { return new Set(); }
+  }
+  function saveOutlineBodyOpen(set) {
+    localStorage.setItem(OUTLINE_BODY_OPEN_KEY, JSON.stringify([...set]));
+  }
+
+  const outlineCollapsed = loadOutlineCollapsed();
+  const outlineBodyOpen = loadOutlineBodyOpen();
+  const EMBED_MAX_DEPTH = 3;
+  const embedCache = new Map();
+
+  function substituteEmbedPlaceholders(md) {
+    if (!md) return md;
+    return md.replace(/!\[\[([^\]]+)\]\]|!@\[\[([^\]]+)\]\]|!@([^\s\[\]]+)/g,
+      (full, bracketTitle, bracketAtTitle, shorthand) => {
+        const t = (bracketTitle || bracketAtTitle || shorthand || '').trim();
+        if (!t) return full;
+        return `<div class="embed" data-embed-title="${escapeHtmlBasic(t)}"></div>`;
+      });
+  }
+
+  // ---------- Per-render source-line tagging for drag-reorder ----------
+  // We tag each rendered <li> with the source line index of its markdown
+  // origin, so savePreviewListOrder() can reorder *raw source lines*
+  // instead of reconstructing text (which would destroy markdown).
+  //
+  // The scan below walks the raw markdown the same way marked's block
+  // tokenizer does for lists: a list item starts with `- `, `* `, `+ `
+  // (optionally indented) and continues through any following lines that
+  // are indented deeper than the item marker.
+  function scanListItemsByOrdinal(md) {
+    // Returns: array indexed by the Nth list item in the document (0-based),
+    // each entry is { startLine, endLine } (inclusive, endLine is the last
+    // line belonging to that item, including indented continuations).
+    const lines = md.split('\n');
+    const items = [];
+    let i = 0;
+    const bulletRe = /^(\s*)([-*+]|\d+\.)\s+/;
+
+    while (i < lines.length) {
+      const m = bulletRe.exec(lines[i]);
+      if (!m) { i++; continue; }
+      const indent = m[1].length;
+      const startLine = i;
+      let j = i + 1;
+      // Consume continuation lines: blank lines followed by deeper-indented
+      // content, or directly-indented lines deeper than this bullet's indent.
+      while (j < lines.length) {
+        const ln = lines[j];
+        if (ln.trim() === '') {
+          // Blank: look ahead — if next non-blank is still deeper than indent
+          // AND looks like continuation, keep going; else stop.
+          let k = j + 1;
+          while (k < lines.length && lines[k].trim() === '') k++;
+          if (k >= lines.length) break;
+          const kn = lines[k];
+          const km = bulletRe.exec(kn);
+          if (km) {
+            const nextIndent = km[1].length;
+            if (nextIndent > indent) { j = k; continue; }
+            break;
+          }
+          // Non-list deeper-indented line → still continuation.
+          const leading = kn.match(/^(\s*)/)[1].length;
+          if (leading > indent) { j = k; continue; }
+          break;
+        }
+        const bm = bulletRe.exec(ln);
+        if (bm) {
+          const nextIndent = bm[1].length;
+          if (nextIndent > indent) { j++; continue; } // nested subitem
+          break; // sibling or shallower → this item ends
+        }
+        const leading = ln.match(/^(\s*)/)[1].length;
+        if (leading > indent) { j++; continue; } // continuation line
+        break; // top-level paragraph → list ends
+      }
+      items.push({ startLine, endLine: j - 1 });
+      i = j;
+    }
+    return items;
+  }
+
+  function mdToHtml(md, lineOffset = 0) {
+    let _listItemOrdinal = 0;
+    let _itemRanges = scanListItemsByOrdinal(md);
+
+    const renderer = new marked.Renderer();
+    const originalListItem = renderer.listitem.bind(renderer);
+    renderer.listitem = function (text, task, checked) {
+      const idx = _listItemOrdinal++;
+      const range = _itemRanges[idx];
+      const html = originalListItem(text, task, checked);
+      if (!range) return html;
+      // `lineOffset` lets block-card rendering tag each <li> with its
+      // GLOBAL line number in the whole note, so savePreviewListOrder()
+      // can look up the right source range.
+      const globalLine = range.startLine + lineOffset;
+      return html.replace(/^<li(\s|>)/, `<li data-src-line="${globalLine}"$1`);
+    };
+
+    const originalLink = renderer.link.bind(renderer);
+    renderer.link = function(href, title, text) {
+      if (typeof href === 'string' && href.startsWith('wikilink:')) {
+        const titleText = decodeURIComponent(href.slice('wikilink:'.length));
+        return `<a href="wikilink:${encodeURIComponent(titleText)}" class="wikilink">${text}</a>`;
+      }
+      return originalLink(href, title, text);
+    };
+
+    const withImages = md.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
+      return `<img src="${url}" alt="${alt || ''}" style="max-width: 100%; border-radius: 8px; display: block; margin: 0.9em 0;" />`;
+    });
+
+    const withEmbeds = substituteEmbedPlaceholders(withImages);
+    const withWiki = withEmbeds.replace(/(?:@)?\[\[([^\]]+)\]\]/g, (_, title) => {
+      return `<a href="wikilink:${encodeURIComponent(title)}" class="wikilink">${title}</a>`;
+    });
+
+    // Migration pass: bare `@Note Title#blockid` (no brackets) — the
+    // older block-picker used to insert this form. Only match when a
+    // `#` + 8-hex-char block ID is present, so random `@word` in
+    // prose is left alone.
+    const withBareAtBlock = withWiki.replace(
+      /(^|[\s(])@([^\s\[\]#][^\[\]\n#]*?)#([0-9a-f]{8})\b/g,
+      (full, pre, title, blockid) => {
+        const safeTitle = title.trim();
+        return `${pre}<a href="wikilink:${encodeURIComponent(safeTitle + '#' + blockid)}" class="wikilink">@${safeTitle}#${blockid}</a>`;
+      }
+    );
+
+    return marked.parse(withBareAtBlock, {
+      breaks: true,
+      gfm: true,
+      renderer: renderer,
+    });
+  }
+
+  async function fetchEmbedTarget(title) {
+    const key = title.trim().toLowerCase();
+    if (embedCache.has(key)) return embedCache.get(key);
+    let result;
+    try {
+      const r = await fetch(`/api/notes/by-title/${encodeURIComponent(title)}`);
+      if (r.ok) {
+        const d = await r.json();
+        result = { id: d.id, title: d.title || title, content: d.content || '', missing: false };
+      } else {
+        result = { title, content: '', missing: true };
+      }
+    } catch (e) {
+      result = { title, content: '', missing: true };
+    }
+    embedCache.set(key, result);
+    return result;
+  }
+  
+  async function renderSearchEmbed(el, searchName) {
+    // If the title is "#123", it's a search embed by ID
+    let searchId = null;
+    let displayName = searchName;
+    const idMatch = searchName.match(/^#(\d+)$/);
+    if (idMatch) {
+      searchId = parseInt(idMatch[1], 10);
+      displayName = 'Search #' + searchId;
+    }
+
+    // Mark this embed as a search embed so the preview click handler skips it
+    el.dataset.embedKind = 'search';
+
+    el.innerHTML = `<div class="embed-label">Search: ${escapeHtmlBasic(displayName)}</div><div class="embed-body">Loading…</div>`;
+    
+    try {
+      if (searchId !== null) {
+        // ID-based lookup — do not fall back to note embed if not found
+        try {
+          const resultsRes = await fetch(`/api/searches/${searchId}/results`);
+          if (!resultsRes.ok) {
+            el.innerHTML = `<div class="embed-label">Search ${escapeHtmlBasic(searchName)}</div><div class="embed-body embed-missing">Saved search not found.</div>`;
+            return true;
+          }
+          const results = await resultsRes.json();
+          displaySearchResults(el, { id: searchId, name: displayName }, results);
+          return true;
+        } catch (e) {
+          el.innerHTML = `<div class="embed-label">Search ${escapeHtmlBasic(searchName)}</div><div class="embed-body embed-missing">Failed to load.</div>`;
+          return true;
+        }
+      }
+      
+      // Legacy: name-based lookup
+      const searchRes = await fetch(`/api/searches?q=${encodeURIComponent(searchName)}`);
+      const searches = await searchRes.json();
+      const match = searches.find(s => (s.name || '').toLowerCase() === searchName.trim().toLowerCase());
+      if (!match) {
+        // Not a search — clear the marker and fall back to note embed
+        delete el.dataset.embedKind;
+        return false;
+      }
+      
+      const resultsRes = await fetch(`/api/searches/${match.id}/results`);
+      const results = await resultsRes.json();
+      displaySearchResults(el, match, results);
+      return true;
+    } catch (e) {
+      if (searchId !== null) {
+        el.innerHTML = `<div class="embed-label">Search ${escapeHtmlBasic(searchName)}</div><div class="embed-body embed-missing">Error: ${escapeHtmlBasic(String(e))}</div>`;
+        return true;
+      }
+      delete el.dataset.embedKind;
+      return false;
+    }
+  }
+
+  function displaySearchResults(el, match, results) {
+    el.dataset.embedKind = 'search';
+    let html = `<div class="embed-label">Search: ${escapeHtmlBasic(match.name)} <span class="embed-count">(${results.length})</span></div><div class="embed-body">`;
+    if (!results.length) {
+      html += `<p class="embed-empty">No results.</p>`;
+    } else {
+      html += '<ul class="embed-search-results">';
+      results.forEach(r => {
+        html += `<li><a href="/?note=${r.id}" class="embed-result-link">${escapeHtmlBasic(r.title)}</a></li>`;
+      });
+      html += '</ul>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+
+    el.querySelectorAll('.embed-result-link').forEach(a => {
+      a.addEventListener('click', async (ev) => {
+        ev.preventDefault();
+        if (typeof window.__savePending === 'function' && window.__savePending()) {
+          try { await window.__flushSave?.(); } catch (err) {}
+        }
+        const href = a.getAttribute('href') || '';
+        const m = href.match(/[?&]note=(\d+)/);
+        const targetId = m ? m[1] : null;
+        const currentIsNote = window.NOTE_ID && /^\d+$/.test(String(window.NOTE_ID));
+        if (targetId && currentIsNote && typeof window.__swapNoteInPlace === 'function') {
+          const ok = await window.__swapNoteInPlace(Number(targetId));
+          if (ok) return;
+        }
+        location.href = href;
+      });
+    });
+  }
+  let _knownNoteTitles = new Set();
+  let _knownNoteTitlesPromise = null;
+  let _knownNoteTitlesLoaded = false;
+
+  async function loadNoteTitleCache() {
+    if (window.KNOWN_NOTE_TITLES && window.KNOWN_NOTE_TITLES.size > 0) {
+      return window.KNOWN_NOTE_TITLES;
+    }
+    if (_knownNoteTitlesLoaded) return _knownNoteTitles;
+    if (_knownNoteTitlesPromise) return _knownNoteTitlesPromise;
+
+    _knownNoteTitlesPromise = (async () => {
+      try {
+        const r = await fetch('/api/notes?q=&limit=10000');
+        const notes = await r.json();
+        _knownNoteTitles = new Set(notes.map(n => (n.title || '').toLowerCase()));
+      } catch (e) {
+        _knownNoteTitles = new Set();
+      }
+      _knownNoteTitlesLoaded = true;
+      _knownNoteTitlesPromise = null;
+      return _knownNoteTitles;
+    })();
+
+    return _knownNoteTitlesPromise;
+  }
+
+  async function fillEmbeds(rootEl, visited, depth) {
+    visited = visited || new Set();
+    depth = depth || 0;
+    if (!rootEl.querySelector('.embed[data-embed-title]')) return;    
+
+    const knownTitles = await loadNoteTitleCache();
+    const embeds = [...rootEl.querySelectorAll('.embed[data-embed-title]')];
+
+    for (const el of embeds) {
+      if (el.dataset.embedFilled === '1') continue;
+      el.dataset.embedFilled = '1';
+      const title = el.getAttribute('data-embed-title') || '';
+
+      // 1. Skip file-like embed titles
+      if (/\.(png|jpg|jpeg|gif|webp|svg|pdf|base|webm|mp3|mp4|wav|ods|docx|txt|md)$/i.test(title)) {
+        el.innerHTML = `<span class="embed-label">${escapeHtmlBasic(title)}</span>`;
+        continue;
+      }
+
+      // 2. If it looks like a search embed (#123), try that FIRST before checking note titles
+      if (/^#\d+$/.test(title.trim())) {
+        const isSearch = await renderSearchEmbed(el, title);
+        if (isSearch) continue;
+      }
+
+      // 3. Skip anything that isn't a real note title (for note embeds)
+      const lower = title.trim().toLowerCase();
+      if (!knownTitles.has(lower)) {
+        // Try search embed by name as a fallback
+        const isSearch = await renderSearchEmbed(el, title);
+        if (isSearch) continue;
+        
+        // If it's not a search either, mark it as missing
+        el.classList.add('embed-missing');
+        el.innerHTML = `<span class="embed-label">![[${escapeHtmlBasic(title)}]] (missing)</span>`;
+        continue;
+      }
+
+      // 4. Try rendering as search embed (legacy name-based)
+      const isSearch = await renderSearchEmbed(el, title);
+      if (isSearch) continue;
+
+      // 5. Normal note embed logic
+      const key = title.trim().toLowerCase();
+      if (depth >= EMBED_MAX_DEPTH) {
+        el.classList.add('embed-capped');
+        el.innerHTML = `<span class="embed-label">↻ ${escapeHtmlBasic(title)} (max depth)</span>`;
+        continue;
+      }
+      if (visited.has(key)) {
+        el.classList.add('embed-loop');
+        el.innerHTML = `<span class="embed-label">↻ ${escapeHtmlBasic(title)} (loop)</span>`;
+        continue;
+      }
+
+      const target = await fetchEmbedTarget(title);
+      if (target.missing) {
+        el.classList.add('embed-missing');
+        el.innerHTML = `<span class="embed-label">![[${escapeHtmlBasic(title)}]] (missing)</span>`;
+        continue;
+      }
+
+      const nextVisited = new Set(visited);
+      nextVisited.add(key);
+
+      // If the note has no body, render its children instead
+      if (!target.content || !target.content.trim()) {
+        try {
+          const childRes = await fetch(`/note/${target.id}/children`);
+          if (childRes.ok) {
+            const childData = await childRes.json();
+            if (childData.children && childData.children.length > 0) {
+              let childHtml = '<ul class="embed-search-results">';
+              childData.children.forEach(c => {
+                childHtml += `<li><a href="/?note=${c.id}" class="embed-result-link">${escapeHtmlBasic(c.title)}</a></li>`;
+              });
+              childHtml += '</ul>';
+              el.innerHTML =
+                `<div class="embed-label">${escapeHtmlBasic(target.title)}</div>` +
+                `<div class="embed-body">${childHtml}</div>`;
+              
+              // Wire up the click handlers for the links
+              el.querySelectorAll('.embed-result-link').forEach(a => {
+                a.addEventListener('click', async (ev) => {
+                  ev.preventDefault();
+                  if (typeof window.__savePending === 'function' && window.__savePending()) {
+                    try { await window.__flushSave?.(); } catch (err) {}
+                  }
+                  const href = a.getAttribute('href') || '';
+                  const m = href.match(/[?&]note=(\d+)/);
+                  const targetId = m ? m[1] : null;
+                  const currentIsNote = window.NOTE_ID && /^\d+$/.test(String(window.NOTE_ID));
+                  if (targetId && currentIsNote && typeof window.__swapNoteInPlace === 'function') {
+                    const ok = await window.__swapNoteInPlace(Number(targetId));
+                    if (ok) return;
+                  }
+                  location.href = href;
+                });
+              });
+
+              continue; // Done with this embed
+            }
+          }
+        } catch (e) {
+          console.error('Failed to load children for embed', e);
+        }
+      }
+
+      // Normal note embed (has content)
+      el.innerHTML =
+        `<div class="embed-label">${escapeHtmlBasic(target.title)}</div>` +
+        `<div class="embed-body">${mdToHtml(target.content)}</div>`;
+      await fillEmbeds(el, nextVisited, depth + 1);
+    }
+  }
+
+  function wireOutlineWikilinks(rootEl) {
+    rootEl.querySelectorAll('.outline-body a[href^="wikilink:"]').forEach(a => {
+      a.classList.add('wikilink');
+      a.addEventListener('click', async (e) => {
+        e.preventDefault();
+
+        if (typeof window.__savePending === 'function' && window.__savePending()) {
+          try { await window.__flushSave?.(); } catch (err) {}
+        }
+
+        const title = decodeURIComponent(a.getAttribute('href').slice('wikilink:'.length));
+        const r = await fetch(`/api/notes/by-title/${encodeURIComponent(title)}`);
+        if (!r.ok) {
+          alert('Note not found: ' + title);
+          return;
+        }
+        const n = await r.json();
+        if (n.block_id) {
+          instantCollapseBeforeNav();
+          instantNavigate();
+          location.href = `/?note=${n.id}&block=${n.block_id}`;
+          return;
+        }
+        if (typeof window.__swapNoteInPlace === 'function') {
+          const ok = await window.__swapNoteInPlace(Number(n.id));
+          if (ok) return;
+        }
+        instantCollapseBeforeNav();
+        instantNavigate();
+        location.href = `/?note=${n.id}`;
+      });
+    });
+  }
+
+  function applyOutlineCollapsedState(rootEl) {
+    rootEl.querySelectorAll('.outline-node[data-note-id]').forEach(node => {
+      const id = String(node.dataset.noteId);
+
+      // Restore children collapsed state (handled by CSS class).
+      if (outlineCollapsed.has(id)) {
+        node.classList.add('collapsed');
+      }
+
+      // Restore body open state — set inline display so it works even
+      // if CSS rule ordering changes.
+      const wrap = node.querySelector(':scope > .outline-sub > .outline-body-wrap');
+      const btn = node.querySelector(':scope > .outline-head [data-action="toggle-outline-body"] .material-symbols-rounded');
+      if (outlineBodyOpen.has(id)) {
+        node.classList.add('body-open');
+        if (wrap) wrap.style.display = 'block';
+        if (btn) btn.textContent = 'unfold_less';
+      } else {
+        node.classList.remove('body-open');
+        if (wrap) wrap.style.display = 'none';
+        if (btn) btn.textContent = 'unfold_more';
+      }
+    });
+  }
+  
+  async function renderOutlineMarkdown(rootEl) {
+    // Only render bodies that are actually visible (not inside a collapsed ancestor)
+    const bodies = [...rootEl.querySelectorAll('.outline-body[data-markdown]')];
+    for (const el of bodies) {
+      // Skip if this body is inside a collapsed node
+      let parent = el.closest('.outline-node');
+      let isHidden = false;
+      while (parent) {
+        if (parent.classList.contains('collapsed') || !parent.classList.contains('body-open')) {
+          isHidden = true;
+          break;
+        }
+        parent = parent.parentElement?.closest('.outline-node');
+      }
+      if (isHidden) continue;
+      
+      const raw = el.getAttribute('data-markdown') || '';
+      if (!raw) continue;
+      el.innerHTML = mdToHtml(raw);
+      el.querySelectorAll('img').forEach(img => {
+        img.loading = 'lazy';
+        img.decoding = 'async';
+      });
+      try { await fillEmbeds(el); } catch (e) {}
+    }
+  }
+  
+
+  async function initOutline() {
+    const outline = document.querySelector('.outline');
+    if (!outline) return;
+    await renderOutlineMarkdown(outline);
+    wireOutlineWikilinks(outline);
+    applyOutlineCollapsedState(outline);
+  }
+  
+  // Outline "..." menu button: opens the note context menu.
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.outline-menu-btn');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof openNoteMenuPopover === 'function') {
+      openNoteMenuPopover(btn);
+    }
+  }, true);  
+  
+  // Handle expanding/collapsing custom folders in the outline
+  document.addEventListener('click', (e) => {
+    const customIcon = e.target.closest('.outline-folder-icon');
+    if (!customIcon) return;
+    
+    const node = customIcon.closest('.outline-node');
+    if (!node) return;
+    
+    const id = node.dataset.noteId;
+    if (!['pinned-section', 'recent-section', 'saved-search-section'].includes(id)) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation(); // Stop the default handler from interfering
+
+    // Force the state to open on first click, then toggle normally
+    let isCollapsed = node.classList.contains('collapsed');
+    
+    // If it has no children yet, it's the first click — force open
+    const childContainer = node.querySelector(':scope > .outline-sub > .outline-children');
+    if (childContainer && childContainer.children.length <= 1) {
+      isCollapsed = false; 
+    } else {
+      isCollapsed = !isCollapsed;
+    }
+
+    node.classList.toggle('collapsed', isCollapsed);
+    
+    if (!childContainer) return;
+
+    if (isCollapsed) {
+      childContainer.style.display = 'none';
+      return;
+    }
+
+    childContainer.style.display = 'block';
+
+    // Populate if empty (or only has the "Loading..." text)
+    if (childContainer.children.length <= 1) {
+      let childrenData = [];
+
+      if (id === 'pinned-section') {
+        childrenData = window.PINNED_NOTES_DATA || [];
+      } else if (id === 'recent-section') {
+        childrenData = JSON.parse(localStorage.getItem('recent-notes') || '[]');
+      } else if (id === 'saved-search-section') {
+        childrenData = (window.SAVED_SEARCHES_DATA || []).map(s => ({
+           ...s,
+           is_search_node: true
+        }));
+      }
+
+      if (childrenData.length === 0) {
+        childContainer.innerHTML = '<div style="padding: 4px 12px; font-size: 13px; color: var(--text-faint); font-style: italic;">Empty</div>';
+        return;
+      }
+
+      childContainer.innerHTML = '';
+      childrenData.forEach(child => {
+        if (child.is_search_node) {
+          childContainer.innerHTML += `
+            <div class="outline-node">
+              <div class="outline-head">
+                <span class="material-symbols-rounded" style="color: var(--accent); flex-shrink: 0; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;">bookmark</span>
+                <a href="/?search=${child.id}" class="outline-title">${child.title}</a>
+              </div>
+            </div>
+          `;
+        } else {
+          childContainer.innerHTML += buildOutlineNodeHTML(child);
+        }
+      });
+    }
+  }, true);
+  
+  // ============================================================
+  // DELEGATED OUTLINE CLICK HANDLER (Fixes first-tap bug)
+  // ============================================================
+  document.addEventListener('click', async (e) => {
+    // 1. Handle outline fold/unfold
+    const bullet = e.target.closest('[data-action="toggle-outline"]');
+    if (bullet) {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const node = bullet.closest('.outline-node');
+      if (!node) return;
+      const id = String(node.dataset.noteId || '');
+      if (!id) return;
+      
+    // 1. Toggle the class VISUALLY
+    const isCollapsed = node.classList.toggle('collapsed');
+    
+    // 2. Update the saved state so it stays open
+    if (isCollapsed) outlineCollapsed.add(id);
+    else outlineCollapsed.delete(id);
+    saveOutlineCollapsed(outlineCollapsed);
+    
+    // 3. CRITICAL FIX: If we are opening it, FORCE the DOM to stay open
+    if (!isCollapsed) {
+      // We remove the class right before the fetch, so it doesn't get
+      // re-applied by the render function while fetching.
+      node.classList.remove('collapsed');
+    }
+      
+      const leftIcon = node.querySelector(':scope > .outline-head > .outline-bullet .material-symbols-rounded');
+      if (leftIcon) leftIcon.textContent = 'chevron_right';
+
+      if (typeof updateOutlineFoldIcon === 'function') updateOutlineFoldIcon();
+
+      // Lazy-load children only if opening and empty
+      if (!isCollapsed) {
+        const childContainer = node.querySelector(':scope > .outline-sub > .outline-children');
+        if (childContainer && childContainer.children.length === 0) {
+          try {
+            // Force it open before the fetch
+            node.classList.remove('collapsed');
+            
+            const res = await fetch(`/note/${id}/children`);
+            const data = await res.json();
+            const html = data.children.map(c => buildOutlineNodeHTML(c)).join('');
+            childContainer.innerHTML = html;
+            
+            // Don't let applyOutlineCollapsedState re-collapse this specific node
+            const wasCollapsed = outlineCollapsed.has(id);
+            outlineCollapsed.delete(id); // Temporarily remove from state
+            
+            applyOutlineCollapsedState(childContainer);
+            renderOutlineMarkdown(childContainer);
+            wireOutlineWikilinks(childContainer);
+            
+            // Force it open after the fetch
+            node.classList.remove('collapsed');
+            
+            // Update the visual chevron
+            const leftIcon = node.querySelector(':scope > .outline-head > .outline-bullet .material-symbols-rounded');
+            if (leftIcon) leftIcon.textContent = 'chevron_right';
+            
+          } catch (err) {
+            console.error('Failed to load outline children', err);
+          }
+        }
+      }
+      return;
+    }
+
+    // 2. Handle outline body toggle
+    const bodyBtn = e.target.closest('[data-action="toggle-outline-body"]');
+    if (bodyBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const node = bodyBtn.closest('.outline-node');
+      if (!node) return;
+      const id = String(node.dataset.noteId || '');
+      if (!id) return;
+
+      const wrap = node.querySelector(':scope > .outline-sub > .outline-body-wrap');
+      
+      if (!wrap) {
+        // Fallback for children toggle
+        const childContainer = node.querySelector(':scope > .outline-sub > .outline-children');
+        if (childContainer) {
+          const isCollapsed = node.classList.toggle('collapsed');
+          const icon = bodyBtn.querySelector('.material-symbols-rounded');
+          if (icon) icon.textContent = isCollapsed ? 'unfold_more' : 'unfold_less';
+
+          if (!isCollapsed && childContainer.children.length === 0) {
+            try {
+              node.classList.remove('collapsed');
+              outlineCollapsed.delete(id);
+              
+              const res = await fetch(`/note/${id}/children`);
+              const data = await res.json();
+              const html = data.children.map(c => buildOutlineNodeHTML(c)).join('');
+              childContainer.innerHTML = html;
+              
+              applyOutlineCollapsedState(childContainer);
+              renderOutlineMarkdown(childContainer);
+              wireOutlineWikilinks(childContainer);
+              
+              node.classList.remove('collapsed');
+            } catch (err) { console.error(err); }
+          }
+        }
+        return;
+      }
+
+      const currentlyVisible = wrap.style.display === 'block';
+      const wantVisible = !currentlyVisible;
+
+      wrap.style.display = wantVisible ? 'block' : 'none';
+      node.classList.toggle('body-open', wantVisible);
+      
+      if (wantVisible) {
+        const bodyEl = wrap.querySelector('.outline-body[data-markdown]');
+        if (bodyEl && !bodyEl.innerHTML.trim()) {
+          const raw = bodyEl.getAttribute('data-markdown') || '';
+          if (raw) {
+            bodyEl.innerHTML = mdToHtml(raw);
+            bodyEl.querySelectorAll('img').forEach(img => {
+              img.loading = 'lazy';
+              img.decoding = 'async';
+            });
+            fillEmbeds(bodyEl).catch(() => {});
+          }
+        }
+      }    
+
+      const icon = bodyBtn.querySelector('.material-symbols-rounded');
+      if (icon) icon.textContent = wantVisible ? 'unfold_less' : 'unfold_more';
+
+      if (wantVisible) outlineBodyOpen.add(id);
+      else outlineBodyOpen.delete(id);
+      saveOutlineBodyOpen(outlineBodyOpen);
+      return;
+    }
+  }, true); // Capture phase ensures it runs before other handlers  
+
+  initOutline();
+  
+  // Lazy-load the outline container from JSON so the server doesn't
+  // have to render 727 outline nodes for Root.
+  (async function loadLazyOutline() {
+    const wrap = document.querySelector('[data-lazy-outline]');
+    if (!wrap) return;
+    const container = wrap.querySelector('#outline-container');
+    if (!container) return;
+    const noteId = wrap.getAttribute('data-lazy-outline');
+    try {
+      // Add a cache-buster so the browser NEVER serves a stale empty response
+      const res = await fetch(`/note/${noteId}/children?t=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.children.length) return;
+      container.innerHTML = data.children.map(c => buildOutlineNodeHTML(c)).join('');
+      if (typeof applyOutlineCollapsedState === 'function') applyOutlineCollapsedState(container);
+      if (typeof wireOutlineWikilinks === 'function') wireOutlineWikilinks(container);
+      if (typeof renderOutlineMarkdown === 'function') renderOutlineMarkdown(container);
+
+      // Reveal the fold button now that nodes exist
+      if (typeof updateOutlineFoldIcon === 'function') updateOutlineFoldIcon();
+
+    } catch (e) {
+      console.warn('lazy outline load failed', e);
+    }
+  })();
+  
+  window.__refreshOutline = async function() {
+    const wrap = document.querySelector('[data-lazy-outline]');
+    if (!wrap) return;
+    const container = wrap.querySelector('#outline-container');
+    if (!container) return;
+    const noteId = wrap.getAttribute('data-lazy-outline');
+    try {
+      // Add a cache-buster here too
+      const res = await fetch(`/note/${noteId}/children?t=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.children.length) { container.innerHTML = ''; return; }
+      container.innerHTML = data.children.map(c => buildOutlineNodeHTML(c)).join('');
+      if (typeof applyOutlineCollapsedState === 'function') applyOutlineCollapsedState(container);
+      if (typeof wireOutlineWikilinks === 'function') wireOutlineWikilinks(container);
+      if (typeof renderOutlineMarkdown === 'function') renderOutlineMarkdown(container);
+      
+      if (typeof updateOutlineFoldIcon === 'function') updateOutlineFoldIcon();
+      
+    } catch (e) {
+      console.warn('refresh outline failed', e);
+    }
+  };
+
+  window.mdToHtml = mdToHtml;
+  window.fillEmbeds = fillEmbeds;
+  window.scanListItemsByOrdinal = scanListItemsByOrdinal;
+
+  // ---------- Outline: fold / unfold all ----------
+  const outlineFoldBtn = document.getElementById('toggle-outline-fold');
+  const outlineFoldIcon = document.getElementById('outline-fold-icon');
+
+  function isFoldableOutlineNode(node) {
+    // A node is foldable if it has children OR has a body
+    return !!(node.querySelector(':scope > .outline-sub > .outline-children') ||
+              node.querySelector(':scope > .outline-sub > .outline-body-wrap'));
+  }
+
+  function anyOutlineExpanded() {
+    const outline = document.querySelector('.outline');
+    if (!outline) return false;
+    // If ANY body is open, or ANY children are not collapsed, it's "expanded"
+    const nodes = outline.querySelectorAll('.outline-node[data-note-id]');
+    for (const n of nodes) {
+      if (n.classList.contains('body-open')) return true;
+      if (n.querySelector(':scope > .outline-sub > .outline-children') && !n.classList.contains('collapsed')) return true;
+    }
+    return false;
+  }
+
+  function anyOutlineFoldable() {
+    const outline = document.querySelector('.outline');
+    if (!outline) return false;
+    const nodes = outline.querySelectorAll('.outline-node[data-note-id]');
+    for (const n of nodes) {
+      if (isFoldableOutlineNode(n)) return true;
+    }
+    return false;
+  }
+
+  function updateOutlineFoldIcon() {
+    if (!outlineFoldBtn) return;
+    if (!anyOutlineFoldable()) {
+      outlineFoldBtn.style.display = 'none';
+      return;
+    }
+    outlineFoldBtn.style.display = '';
+    if (outlineFoldIcon) {
+      outlineFoldIcon.textContent = anyOutlineExpanded() ? 'unfold_less' : 'unfold_more';
+    }
+  }
+
+  // Fold/unfold-all handler — wrapped in a function so the swap path
+  // can rebind it after rebuilding the outline DOM.
+  window.__rebindOutlineFoldBtn = function () {
+    const btn = document.getElementById('toggle-outline-fold');
+    if (!btn || btn.dataset.bound === '1') return;
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', async () => {
+      const outline = document.querySelector('.outline');
+      if (!outline) return;
+
+      let anyExpanded = false;
+      outline.querySelectorAll('.outline-node[data-note-id]').forEach(node => {
+        if (node.classList.contains('body-open')) anyExpanded = true;
+        if (node.querySelector(':scope > .outline-sub > .outline-children') && !node.classList.contains('collapsed')) anyExpanded = true;
+      });
+      const shouldCollapse = anyExpanded;
+      const nodes = [...outline.querySelectorAll('.outline-node[data-note-id]')];
+
+      for (const node of nodes) {
+        const id = String(node.dataset.noteId || '');
+        if (!id) continue;
+        if (node.querySelector(':scope > .outline-sub > .outline-children')) {
+          if (shouldCollapse) {
+            node.classList.add('collapsed');
+            outlineCollapsed.add(id);
+          } else {
+            node.classList.remove('collapsed');
+            outlineCollapsed.delete(id);
+            const childContainer = node.querySelector(':scope > .outline-sub > .outline-children');
+            if (childContainer && childContainer.children.length === 0) {
+              try {
+                const res = await fetch(`/note/${id}/children`);
+                const d = await res.json();
+                const html = d.children.map(c => buildOutlineNodeHTML(c)).join('');
+                childContainer.innerHTML = html;
+                applyOutlineCollapsedState(childContainer);
+                renderOutlineMarkdown(childContainer);
+                wireOutlineWikilinks(childContainer);
+              } catch (err) { console.error(err); }
+            }
+          }
+        }
+        const wrap = node.querySelector(':scope > .outline-sub > .outline-body-wrap');
+        const icon = node.querySelector(':scope > .outline-head [data-action="toggle-outline-body"] .material-symbols-rounded');
+        if (wrap) {
+          if (shouldCollapse) {
+            wrap.style.display = 'none';
+            node.classList.remove('body-open');
+            if (icon) icon.textContent = 'unfold_more';
+            outlineBodyOpen.delete(id);
+          } else {
+            wrap.style.display = 'block';
+            node.classList.add('body-open');
+            if (icon) icon.textContent = 'unfold_less';
+            outlineBodyOpen.add(id);
+            const bodyEl = wrap.querySelector('.outline-body[data-markdown]');
+            if (bodyEl && !bodyEl.innerHTML.trim()) {
+              const raw = bodyEl.getAttribute('data-markdown') || '';
+              if (raw) {
+                bodyEl.innerHTML = mdToHtml(raw);
+                bodyEl.querySelectorAll('img').forEach(img => { img.loading = 'lazy'; img.decoding = 'async'; });
+                fillEmbeds(bodyEl).catch(() => {});
+              }
+            }
+          }
+        }
+      }
+      saveOutlineCollapsed(outlineCollapsed);
+      saveOutlineBodyOpen(outlineBodyOpen);
+      const foldIcon = document.getElementById('outline-fold-icon');
+      if (foldIcon) foldIcon.textContent = shouldCollapse ? 'unfold_more' : 'unfold_less';
+    });
+  };
+
+  window.__rebindOutlineFoldBtn();
+
+  updateOutlineFoldIcon();
+
+  // ---------- Search results toolbar ----------
+  const resultsSortBy = document.getElementById('results-sort-by');
+  const resultsSortDir = document.getElementById('results-sort-dir');
+  const resultsGroupBy = document.getElementById('results-group-by');
+  const inResultsView = !!document.querySelector('.results-list');
+
+  function pushResultsParams() {
+    const params = new URLSearchParams(location.search);
+    if (resultsSortBy) params.set('sort_by', resultsSortBy.value);
+    if (resultsSortDir) params.set('sort_dir', resultsSortDir.value);
+    if (resultsGroupBy) {
+      if (resultsGroupBy.value) params.set('group_by', resultsGroupBy.value);
+      else params.delete('group_by');
+    }
+    params.set('nofocus', '1');
+    
+    // Instead of location.href (which adds a new history entry),
+    // we replace the current history entry and reload the page.
+    window.history.replaceState(null, '', '/?' + params.toString());
+    window.location.reload();
+  }
+
+  if (resultsSortBy) resultsSortBy.addEventListener('change', pushResultsParams);
+  if (resultsSortDir) resultsSortDir.addEventListener('change', pushResultsParams);
+  if (resultsGroupBy) resultsGroupBy.addEventListener('change', pushResultsParams);
+
+  (function () {
+    if (!inResultsView) return;
+    const KEY = 'results-collapsed-groups';
+    let collapsed;
+    try { collapsed = new Set(JSON.parse(localStorage.getItem(KEY) || '[]')); }
+    catch (e) { collapsed = new Set(); }
+
+    function save() {
+      try { localStorage.setItem(KEY, JSON.stringify([...collapsed])); }
+      catch (e) {}
+    }
+
+    document.querySelectorAll('.result-group').forEach(g => {
+      const gid = g.dataset.groupId;
+      if (!gid) return;
+      if (collapsed.has(gid)) g.classList.add('collapsed');
+    });
+
+    document.querySelectorAll('.result-group-head').forEach(head => {
+      head.addEventListener('click', () => {
+        const gid = head.dataset.groupId;
+        const group = head.closest('.result-group');
+        if (!group) return;
+        const isCollapsed = group.classList.toggle('collapsed');
+        if (isCollapsed) collapsed.add(gid);
+        else collapsed.delete(gid);
+        save();
+      });
+    });
+  })();
+
+  // ---------- Results: Table View ----------
+  (function () {
+    const toggleBtn = document.getElementById('results-view-toggle');
+    const listContainer = document.getElementById('results-list-container');
+    const tableView = document.getElementById('results-table-view');
+    const colOptions = document.getElementById('table-col-options');
+    const tHead = document.getElementById('results-table-head');
+    const tBody = document.getElementById('results-table-body');
+    
+    if (!toggleBtn || !listContainer || !tableView) return;
+
+    // Extract data using the server-injected properties map
+    const rawData = [];
+    const propsMap = window.SEARCH_RESULTS_PROPS || {};
+    
+    document.querySelectorAll('#results-list-container .result-card').forEach(card => {
+      const id = card.dataset.noteId;
+      const title = card.querySelector('.result-title')?.textContent || 'Untitled';
+      const path = card.querySelector('.result-path')?.textContent || '';
+      
+      const props = propsMap[id] || {};
+      
+      rawData.push({ id, title, path, props });
+    });
+
+    if (rawData.length === 0) return;
+
+    // Find all unique property keys
+    const allKeys = new Set();
+    rawData.forEach(d => Object.keys(d.props).forEach(k => allKeys.add(k)));
+    const sortedKeys = [...allKeys].sort();
+
+    // Build the column picker
+    let activeCols = new Set(['title']); // Title is always shown
+    colOptions.innerHTML = '';
+    sortedKeys.forEach(k => {
+      const lbl = document.createElement('label');
+      lbl.className = 'table-col-check';
+      lbl.innerHTML = `<input type="checkbox" value="${k}"> ${k}`;
+      const cb = lbl.querySelector('input');
+      cb.addEventListener('change', () => {
+        if (cb.checked) activeCols.add(k);
+        else activeCols.delete(k);
+        lbl.classList.toggle('active', cb.checked);
+        
+        // Save the active columns to localStorage
+        // We use a small timeout so it captures the state after all checkboxes settle
+        setTimeout(() => {
+          localStorage.setItem('table-active-cols', JSON.stringify([...activeCols]));
+        }, 0);
+        
+        renderTable();
+      });
+      colOptions.appendChild(lbl);
+    });
+    
+    // Restore checkboxes (Priority: URL -> Saved Search -> LocalStorage)
+    const savedCols = (new URLSearchParams(window.location.search).get('cols') || '').split(',').filter(Boolean);
+    let colsToRestore = [];
+
+    if (savedCols.length > 0) {
+      colsToRestore = savedCols;
+    } else if (window.SAVED_COLUMNS) {
+      colsToRestore = window.SAVED_COLUMNS.split(',').filter(Boolean);
+    } else {
+      // Fallback to local storage for manual views
+      try {
+        colsToRestore = JSON.parse(localStorage.getItem('table-active-cols') || '[]');
+      } catch (e) {}
+    }
+
+    // If no cols were saved anywhere (fresh start), default to showing all except 'path'
+    if (colsToRestore.length === 0) {
+      colsToRestore = sortedKeys;
+    }
+
+    // Always ensure 'title' is active
+    activeCols.add('title');
+
+    colsToRestore.forEach(col => {
+      if (col === 'title') return; // Title is always on
+      const cb = colOptions.querySelector(`input[value="${col}"]`);
+      if (cb) {
+        cb.checked = true;
+        activeCols.add(col);
+        cb.parentElement.classList.add('active');
+      }
+    });
+
+    let sortCol = null;
+    let sortDir = 1; // 1 = asc, -1 = desc
+
+    function isNumeric(str) {
+      return !isNaN(parseFloat(str)) && isFinite(str);
+    }
+
+    function renderTable() {
+      tHead.innerHTML = '';
+      tBody.innerHTML = '';
+
+      // Build Header
+      const trHead = document.createElement('tr');
+      
+      // Title Column
+      const thTitle = document.createElement('th');
+      thTitle.className = 'sortable';
+      thTitle.textContent = 'Title';
+      thTitle.onclick = () => {
+        sortDir = (sortCol === 'title') ? -sortDir : 1;
+        sortCol = 'title';
+        renderTable();
+      };
+      trHead.appendChild(thTitle);
+
+      // Property Columns
+      [...activeCols].sort().forEach(k => {
+        if (k === 'title') return;
+        const th = document.createElement('th');
+        th.className = 'sortable';
+        th.textContent = k;
+        th.onclick = () => {
+          sortDir = (sortCol === k) ? -sortDir : 1;
+          sortCol = k;
+          renderTable();
+        };
+        trHead.appendChild(th);
+      });
+      tHead.appendChild(trHead);
+
+      // Sort Data
+      let displayData = [...rawData];
+      if (sortCol) {
+        displayData.sort((a, b) => {
+          let va = sortCol === 'title' ? a.title : (a.props[sortCol] || '');
+          let vb = sortCol === 'title' ? b.title : (b.props[sortCol] || '');
+          
+          if (isNumeric(va) && isNumeric(vb)) {
+            return (parseFloat(va) - parseFloat(vb)) * sortDir;
+          }
+          return String(va).localeCompare(String(vb)) * sortDir;
+        });
+      }
+
+      // Build Body
+      // Build Body
+      displayData.forEach(row => {
+        const tr = document.createElement('tr');
+        
+        // Title cell (always a link)
+        const tdTitle = document.createElement('td');
+        tdTitle.className = 'col-title';
+        tdTitle.textContent = row.title;
+        tdTitle.onclick = () => { location.href = `/?note=${row.id}`; };
+        tr.appendChild(tdTitle);
+
+        // Property cells (Editable)
+        [...activeCols].sort().forEach(k => {
+          if (k === 'title') return;
+          const td = document.createElement('td');
+          const val = row.props[k] || '';
+          
+          let input;
+          // Build the right input based on the column name
+          if (k === 'due' || k === 'date') {
+            input = document.createElement('input');
+            input.type = 'date';
+            // Ensure the value is in YYYY-MM-DD format
+            if (/^\d{4}-\d{2}-\d{2}$/.test(val)) input.value = val;
+          } else if (k === 'time') {
+            input = document.createElement('input');
+            input.type = 'time';
+            if (/^\d{2}:\d{2}/.test(val)) input.value = val.slice(0, 5);
+          } else if (k === 'done' || k === 'completed' || k === 'checked') {
+            input = document.createElement('input');
+            input.type = 'checkbox';
+            input.checked = (val === 'true' || val === '1');
+          } else {
+            input = document.createElement('input');
+            input.type = 'text';
+            input.value = val;
+            input.setAttribute('list', 'prop-values-all'); // Autocomplete
+          }
+          
+          input.className = 'table-cell-input';
+          if (isNumeric(val) && input.type === 'text') {
+            input.style.textAlign = 'right';
+          }
+
+          // Save on change
+          input.addEventListener('change', async () => {
+            let newValue = input.value;
+            if (input.type === 'checkbox') {
+              newValue = input.checked ? 'true' : 'false';
+            }
+            
+            input.style.opacity = '0.5'; // Visual feedback
+            
+            try {
+              const res = await fetch(`/api/note/${row.id}/update-property`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: k, value: newValue })
+              });
+              if (res.ok) {
+                row.props[k] = newValue; // Update local memory
+                input.style.opacity = '1';
+
+                // If we're inside a search (saved or manual), the edited
+                // note might no longer match the filters. Remove its row
+                // from the table instead of reloading the whole page.
+                const inSearch = window.SAVED_VIEW_MODE
+                  || window.location.search.includes('prop_key')
+                  || window.location.search.includes('q=');
+                if (inSearch) {
+                  const tr = input.closest('tr');
+                  if (tr) tr.remove();
+                }
+              } else {
+                alert('Failed to save');
+                input.style.opacity = '1';
+              }
+            } catch (err) {
+              alert('Error saving: ' + err.message);
+              input.style.opacity = '1';
+            }
+          });
+
+          td.appendChild(input);
+          tr.appendChild(td);
+        });
+
+        tBody.appendChild(tr);
+      });
+
+      // Build Footer (Sums)
+      const tFoot = document.createElement('tfoot');
+      const trFoot = document.createElement('tr');
+      
+      const tdSumLabel = document.createElement('td');
+      tdSumLabel.textContent = 'Sum';
+      trFoot.appendChild(tdSumLabel);
+
+      [...activeCols].sort().forEach(k => {
+        if (k === 'title') return;
+        const td = document.createElement('td');
+        td.className = 'col-num';
+        
+        let sum = 0;
+        let hasNumbers = false;
+        rawData.forEach(r => {
+          const v = r.props[k];
+          if (isNumeric(v)) {
+            sum += parseFloat(v);
+            hasNumbers = true;
+          }
+        });
+
+        if (hasNumbers) td.textContent = Math.round(sum * 100) / 100;
+        trFoot.appendChild(td);
+      });
+      tFoot.appendChild(trFoot);
+      
+      // Remove old footer if exists
+      const oldFoot = tableView.querySelector('tfoot');
+      if (oldFoot) oldFoot.remove();
+      tableView.querySelector('.results-table').appendChild(tFoot);
+    }
+
+    toggleBtn.addEventListener('click', () => {
+      const isTable = tableView.style.display !== 'none';
+      
+      // Determine the unique key for this specific search
+      const urlParams = new URLSearchParams(window.location.search);
+      const searchId = urlParams.get('search') || 'unsaved';
+      const viewModeKey = `view-mode-search-${searchId}`;
+      
+      // Save the new mode
+      localStorage.setItem(viewModeKey, isTable ? 'list' : 'table');
+      
+      const sortBy = document.getElementById('results-sort-by');
+      const sortDir = document.getElementById('results-sort-dir');
+      const groupBy = document.getElementById('results-group-by');
+
+      if (isTable) {
+        tableView.style.display = 'none';
+        listContainer.style.display = '';
+        toggleBtn.classList.remove('active');
+        if (sortBy) sortBy.style.display = '';
+        if (sortDir) sortDir.style.display = '';
+        if (groupBy) groupBy.style.display = '';
+      } else {
+        tableView.style.display = 'flex';
+        listContainer.style.display = 'none';
+        toggleBtn.classList.add('active');
+        if (sortBy) sortBy.style.display = 'none';
+        if (sortDir) sortDir.style.display = 'none';
+        if (groupBy) groupBy.style.display = 'none';
+        
+        activeCols.clear();
+        activeCols.add('title');
+        colOptions.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+          activeCols.add(cb.value);
+        });
+        
+        renderTable();
+      }
+    });
+    
+    // Auto-restore the saved view mode specific to this search
+    const urlParams = new URLSearchParams(window.location.search);
+    const searchId = urlParams.get('search') || 'unsaved';
+    const viewModeKey = `view-mode-search-${searchId}`;
+    const lastViewMode = localStorage.getItem(viewModeKey);
+    
+    // If the saved search has a view mode, use that. Otherwise, check localStorage.
+    if ((window.SAVED_VIEW_MODE === 'table' || lastViewMode === 'table') && tableView.style.display === 'none') {
+      toggleBtn.click();
+    }
+
+    // Restore scroll position
+    const savedScroll = sessionStorage.getItem('search-scroll-pos');
+    if (savedScroll !== null) {
+      setTimeout(() => {
+        const scrollPane = document.querySelector('.editor-main.scroll-pane') || document.querySelector('.results-list');
+        if (scrollPane) {
+          scrollPane.scrollTop = parseInt(savedScroll, 10);
+        }
+        sessionStorage.removeItem('search-scroll-pos');
+      }, 100);
+    }
+  })();
+
+  // ---------- Results: select mode (delete + move) ----------
+  (function () {
+    const section = document.querySelector('[data-results-section]');
+    if (!section) return;
+
+    const cards = () => [...section.querySelectorAll('.result-card[data-note-id]')];
+    const bar = document.querySelector('.results-select-bar');
+    const selectBtn = document.getElementById('results-select-btn');
+
+    let selectMode = false;
+    let longPressTimer = null;
+    let suppressNextClick = false;
+
+    function selectedIds() {
+      return cards()
+        .filter(c => c.classList.contains('selected'))
+        .map(c => c.dataset.noteId);
+    }
+
+    function updateBar() {
+      const n = selectedIds().length;
+      const count = bar?.querySelector('.select-bar-count');
+      if (count) count.textContent = n + ' selected';
+      const delBtn = bar?.querySelector('[data-results-select-action="delete"]');
+      if (delBtn) {
+        delBtn.disabled = n === 0;
+        delBtn.style.opacity = n === 0 ? '0.4' : '1';
+      }
+      const moveBtn = bar?.querySelector('[data-results-select-action="move"]');
+      if (moveBtn) {
+        moveBtn.disabled = n === 0;
+        moveBtn.style.opacity = n === 0 ? '0.4' : '1';
+      }
+    }
+
+    function enterSelectMode() {    	
+      if (selectMode) return;
+      selectMode = true;
+      section.classList.add('select-mode');
+      bar?.classList.add('results-select-visible');
+      selectBtn?.classList.add('active');
+      updateBar();
+    }
+
+    function exitSelectMode() {
+      if (!selectMode) return;
+      selectMode = false;
+      section.classList.remove('select-mode');
+      bar?.classList.remove('results-select-visible');
+      selectBtn?.classList.remove('active');
+      cards().forEach(c => {
+        c.classList.remove('selected');
+        const cb = c.querySelector('[data-select-toggle] .material-symbols-rounded');
+        if (cb) cb.textContent = 'check_box_outline_blank';
+      });
+      updateBar();
+    }
+
+    function toggleCard(card) {
+      if (!card) return;
+      card.classList.toggle('selected');
+      const cb = card.querySelector('[data-select-toggle] .material-symbols-rounded');
+      if (cb) {
+        cb.textContent = card.classList.contains('selected')
+          ? 'check_box'
+          : 'check_box_outline_blank';
+      }
+      updateBar();
+    }
+
+    function navigateToCard(card) {
+      const id = card?.dataset.noteId;
+      if (!id) return;
+      localStorage.setItem('sidebar-collapsed', '1');
+      const url = new URL('/', location.origin);
+      url.searchParams.set('note', id);
+      const currentQ = new URLSearchParams(location.search).get('q');
+      if (currentQ) url.searchParams.set('q', currentQ);
+      const currentPropKey = new URLSearchParams(location.search).get('prop_key');
+      if (currentPropKey) url.searchParams.set('prop_key', currentPropKey);
+      const currentPropVal = new URLSearchParams(location.search).get('prop_val');
+      if (currentPropVal) url.searchParams.set('prop_val', currentPropVal);
+      location.href = url.toString();
+    }
+
+    section.addEventListener('click', (e) => {
+      if (suppressNextClick) {
+        suppressNextClick = false;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      
+      // Skip clicks on property chips — they open the edit modal
+      if (e.target.closest('.prop-chip-tappable')) return;      
+
+      // 1. Handle checkboxes
+      const cb = e.target.closest('[data-select-toggle]');
+      if (cb) {
+        e.preventDefault();
+        e.stopPropagation();
+        const card = cb.closest('.result-card');
+        if (!selectMode) enterSelectMode();
+        toggleCard(card);
+        return;
+      }
+
+      // 2. Handle arrow clicks (expand/collapse) — let the toggle handler do its job, stop here.
+      if (e.target.closest('[data-action="toggle-search-outline"]')) {
+        return;
+      }
+      
+      // Skip if the tap was on an editable property chip
+      if (e.target.closest('.prop-chip-tappable')) return;      
+
+      // 3. Find the exact card that was clicked
+      const card = e.target.closest('.result-card[data-note-id]');
+      if (!card) return;
+
+      // 4. Select mode logic
+      if (selectMode) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleCard(card);
+        return;
+      }
+
+      // 5. Normal navigation — stop the click from bubbling to the parent card
+      e.preventDefault();
+      e.stopPropagation();
+      
+      // If the click was inside a nested children container, we still navigate to the child,
+      // but stopPropagation ensures the parent card doesn't ALSO try to navigate.
+      navigateToCard(card);
+    }, true);
+
+    section.addEventListener('touchstart', (e) => {
+      suppressNextClick = false;
+
+      if (selectMode) return;
+      const card = e.target.closest('.result-card[data-note-id]');
+      if (!card) return;
+      if (e.target.closest('[data-select-toggle]')) return;
+      longPressTimer = setTimeout(() => {
+        longPressTimer = null;
+        suppressNextClick = true;
+        enterSelectMode();
+        toggleCard(card);
+      }, 500);
+    }, { passive: true });
+
+    const cancelLongPress = () => {
+      if (longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+    };
+    section.addEventListener('touchend', cancelLongPress);
+    section.addEventListener('touchcancel', cancelLongPress);
+    section.addEventListener('touchmove', cancelLongPress);
+    section.addEventListener('contextmenu', (e) => {
+      if (e.target.closest('.result-card')) e.preventDefault();
+    });
+
+    selectBtn?.addEventListener('click', () => {
+      if (selectMode) exitSelectMode();
+      else enterSelectMode();
+    });
+
+    bar?.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-results-select-action]');
+      if (!btn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const action = btn.dataset.resultsSelectAction;
+
+      if (action === 'cancel') {
+        exitSelectMode();
+        return;
+      }
+
+      if (action === 'all') {
+        const list = cards();
+        const allSel = list.every(c => c.classList.contains('selected'));
+        list.forEach(c => {
+          if (allSel) {
+            c.classList.remove('selected');
+            const cb = c.querySelector('[data-select-toggle] .material-symbols-rounded');
+            if (cb) cb.textContent = 'check_box_outline_blank';
+          } else {
+            c.classList.add('selected');
+            const cb = c.querySelector('[data-select-toggle] .material-symbols-rounded');
+            if (cb) cb.textContent = 'check_box';
+          }
+        });
+        updateBar();
+        return;
+      }
+
+      if (action === 'delete') {
+        const ids = selectedIds();
+        if (!ids.length) return;
+        const msg = 'Delete ' + ids.length + ' note' + (ids.length === 1 ? '' : 's') +
+                    ' and all their descendants?';
+        if (!confirm(msg)) return;
+        try {
+          const r = await fetch('/notes/bulk-delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids }),
+          });
+          const data = await r.json();
+          if (!data.ok) { alert(data.error || 'Delete failed'); return; }
+
+          data.deleted.forEach(id => {
+            removeNoteFromTabs(id);
+            removeNoteFromRecent(id);
+          });
+          if (typeof window.renderRecent === 'function') window.renderRecent(); 
+
+          const deleted = new Set(data.deleted.map(String));
+          cards().forEach(c => {
+            if (deleted.has(c.dataset.noteId)) c.remove();
+          });
+          exitSelectMode();
+          
+          // Refresh the sidebar and outline instantly instead of reloading
+          if (typeof window.__refreshTree === 'function') window.__refreshTree();
+          if (typeof window.__refreshOutline === 'function') window.__refreshOutline();
+        } catch (err) {
+          alert('Delete failed: ' + err.message);
+        }
+        return;
+      }
+
+      if (action === 'move') {
+        const ids = selectedIds();
+        if (!ids.length) return;
+        openBulkParentPicker(ids);
+        return;
+      }
+    });
+
+    function openBulkParentPicker(ids) {
+      const modal = document.getElementById('parent-picker-modal');
+      const input = document.getElementById('pp-input');
+      const results = document.getElementById('pp-results');
+      if (!modal || !input || !results) {
+        alert('Parent picker unavailable');
+        return;
+      }
+
+      function escapeHtmlBasic(s) {
+        return String(s).replace(/[&<>"']/g, c => ({
+          '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+        }[c]));
+      }
+
+      let idx = 0;
+      let items = [];
+      let timer = null;
+      let submitting = false;
+
+      function closePicker() {
+        modal.classList.remove('open');
+        results.innerHTML = '';
+        input.removeEventListener('input', onInput);
+        input.removeEventListener('keydown', onKey);
+        modal.removeEventListener('click', onModalClick);
+      }
+
+      function goAfterMove() {
+        // Just refresh the tree and remove the moved notes from the search results
+        if (typeof window.__refreshTree === 'function') window.__refreshTree();
+        const idsToRemove = ids.map(String);
+        document.querySelectorAll('.result-card').forEach(c => {
+          if (idsToRemove.includes(c.dataset.noteId)) c.remove();
+        });
+      }
+
+      async function fetchItems(q) {
+        const url = `/api/notes?q=${encodeURIComponent(q)}&limit=20&exclude=${ids[0]}`;
+        const r = await fetch(url);
+        items = await r.json();
+        idx = 0;
+        render();
+      }
+
+      function render() {
+        const topLevel = { id: 0, title: 'Top level' };
+        const inputVal = input.value.trim();
+
+        let createOffer = null;
+        if (inputVal) {
+          const exact = items.some(n =>
+            (n.title || '').toLowerCase() === inputVal.toLowerCase()
+          );
+          if (!exact) createOffer = inputVal;
+        }
+
+        const rows = [topLevel, ...items];
+        results.innerHTML =
+          (createOffer
+            ? `<div class="ac-item ac-create${idx === 0 ? ' sel' : ''}" data-create="1">
+                 <span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px">add</span>
+                 Create "${escapeHtml(createOffer)}" and move here
+               </div>`
+            : '') +
+          rows.map((n, i) => {
+            const rowIdx = createOffer ? i + 1 : i;
+            return `<div class="ac-item${rowIdx === idx ? ' sel' : ''}" data-id="${n.id}">${escapeHtml(n.title)}</div>`;
+          }).join('');
+
+        results.querySelectorAll('.ac-item').forEach(el => {
+          el.addEventListener('mousedown', async (ev) => {
+            ev.preventDefault();
+            if (el.dataset.create) {
+              await createAndMove(input.value.trim());
+            } else {
+              await choose(Number(el.dataset.id));
+            }
+          });
+        });
+      }
+
+      async function choose(targetId) {
+        if (submitting) return;
+        submitting = true;
+        const parent_id = targetId === 0 ? null : targetId;
+        try {
+          const r = await fetch('/notes/bulk-move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids, parent_id }),
+          });
+          const data = await r.json();
+          if (!data.ok) {
+            alert(data.error || 'Move failed');
+            submitting = false;
+            return;
+          }
+          closePicker();
+          exitSelectMode();
+          goAfterMove();
+        } catch (err) {
+          alert('Move failed: ' + err.message);
+          submitting = false;
+        }
+      }
+
+      async function createAndMove(title) {
+        if (!title || submitting) return;
+        submitting = true;
+        try {
+          const cr = await fetch('/note/create-by-title', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title }),
+          });
+          const cd = await cr.json();
+          if (!cd.ok || !cd.id) {
+            alert(cd.error || 'Could not create note');
+            submitting = false;
+            return;
+          }
+          const mr = await fetch('/notes/bulk-move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids, parent_id: cd.id }),
+          });
+          const md = await mr.json();
+          if (!md.ok) {
+            alert(md.error || 'Move failed');
+            submitting = false;
+            return;
+          }
+          closePicker();
+          exitSelectMode();
+          goAfterMove();
+        } catch (err) {
+          alert('Move failed: ' + err.message);
+          submitting = false;
+        }
+      }
+
+      function onInput() {
+        clearTimeout(timer);
+        timer = setTimeout(() => fetchItems(input.value.trim()), 80);
+      }
+
+      function onKey(ev) {
+        const hasCreate = !!results.querySelector('.ac-create');
+        const totalRows = (hasCreate ? 1 : 0) + 1 + items.length;
+        if (ev.key === 'ArrowDown') {
+          idx = Math.min(idx + 1, totalRows - 1);
+          render();
+          ev.preventDefault();
+        } else if (ev.key === 'ArrowUp') {
+          idx = Math.max(idx - 1, 0);
+          render();
+          ev.preventDefault();
+        } else if (ev.key === 'Enter') {
+          if (hasCreate && idx === 0) {
+            createAndMove(input.value.trim());
+            ev.preventDefault();
+            return;
+          }
+          const shift = hasCreate ? 1 : 0;
+          const rowIdx = idx - shift;
+          if (rowIdx === 0) {
+            choose(0);
+          } else {
+            const item = items[rowIdx - 1];
+            if (item) choose(item.id);
+          }
+          ev.preventDefault();
+        } else if (ev.key === 'Escape') {
+          closePicker();
+        }
+      }
+
+      function onModalClick(ev) {
+        if (ev.target.closest('[data-close]')) closePicker();
+      }
+
+      modal.classList.add('open');
+      input.value = '';
+      idx = 0;
+      setTimeout(() => input.focus(), 60);
+      fetchItems('');
+      input.addEventListener('input', onInput);
+      input.addEventListener('keydown', onKey);
+      modal.addEventListener('click', onModalClick);
+    }
+  })();
+
+  // ---------- Captures (Settings page) ----------
+  (function () {
+    const list = document.getElementById('captures-list');
+    const addDetails = document.getElementById('captures-add');
+    if (!list || !addDetails) return;
+
+    const nameInput = document.getElementById('cap-name');
+    const kindSelect = document.getElementById('cap-kind');
+    const targetInput = document.getElementById('cap-target-input');
+    const targetId = document.getElementById('cap-target-id');
+    const targetResults = document.getElementById('cap-target-results');
+    const targetChosen = document.getElementById('cap-target-chosen');
+    const templateInput = document.getElementById('cap-template-input');
+    const templateId = document.getElementById('cap-template-id');
+    const templateResults = document.getElementById('cap-template-results');
+    const templateChosen = document.getElementById('cap-template-chosen');
+    const titleTpl = document.getElementById('cap-title-tpl');
+    const bodyTpl = document.getElementById('cap-body-tpl');
+    const afterSelect = document.getElementById('cap-after');
+    const newAfterSelect = document.getElementById('cap-new-after');
+    const saveBtn = document.getElementById('cap-save');
+    const cancelBtn = document.getElementById('cap-cancel');
+
+    let editingId = null;
+
+    const kindFields = addDetails.querySelectorAll('.cap-kind-fields');
+
+    function updateKindFields() {
+      const kind = kindSelect.value;
+      kindFields.forEach(el => {
+        const kinds = (el.dataset.kind || '').split(/\s+/);
+        el.classList.toggle('active', kinds.includes(kind));
+      });
+    }
+    kindSelect.addEventListener('change', updateKindFields);
+    updateKindFields();
+
+    function wirePicker(inputEl, idEl, resultsEl, chosenEl, endpoint, extraQuery) {
+      let timer = null;
+      let items = [];
+      let idx = -1;
+
+      function closeList() {
+        resultsEl.classList.remove('open');
+        resultsEl.innerHTML = '';
+        idx = -1;
+      }
+
+      function render() {
+        if (!items.length) { closeList(); return; }
+        resultsEl.innerHTML = items.map((n, i) =>
+          `<div class="ac-item${i === idx ? ' sel' : ''}" data-id="${n.id}" data-title="${encodeURIComponent(n.title)}">${n.title}</div>`
+        ).join('');
+        resultsEl.classList.add('open');
+        resultsEl.querySelectorAll('.ac-item').forEach(el => {
+          el.addEventListener('mousedown', (ev) => {
+            ev.preventDefault();
+            choose(Number(el.dataset.id), decodeURIComponent(el.dataset.title));
+          });
+        });
+      }
+
+      function choose(id, title) {
+        idEl.value = String(id);
+        inputEl.value = title;
+        inputEl.style.display = 'none';
+        chosenEl.innerHTML =
+          `<span>${title}</span>` +
+          `<button type="button" title="Change">×</button>`;
+        chosenEl.style.display = 'flex';
+        chosenEl.querySelector('button').addEventListener('click', () => {
+          idEl.value = '';
+          inputEl.style.display = '';
+          inputEl.value = '';
+          chosenEl.style.display = 'none';
+          inputEl.focus();
+        });
+        closeList();
+      }
+
+      inputEl.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+          const q = inputEl.value.trim();
+          const url = `${endpoint}?q=${encodeURIComponent(q)}&limit=15${extraQuery ? '&' + extraQuery : ''}`;
+          try {
+            const r = await fetch(url);
+            items = await r.json();
+            idx = 0;
+            render();
+          } catch (e) { closeList(); }
+        }, 100);
+      });
+
+      inputEl.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') { idx = Math.min(idx + 1, items.length - 1); render(); e.preventDefault(); }
+        else if (e.key === 'ArrowUp') { idx = Math.max(idx - 1, 0); render(); e.preventDefault(); }
+        else if (e.key === 'Enter' && items[idx]) { e.preventDefault(); choose(items[idx].id, items[idx].title); }
+        else if (e.key === 'Escape') closeList();
+      });
+
+      inputEl.addEventListener('blur', () => {
+        setTimeout(closeList, 200);
+      });
+    }
+
+    wirePicker(targetInput, targetId, targetResults, targetChosen, '/api/notes');
+    wirePicker(templateInput, templateId, templateResults, templateChosen, '/api/notes',
+               'is_template=1');
+    wirePicker(
+      document.getElementById('cap-daily-template-input'),
+      document.getElementById('cap-daily-template-id'),
+      document.getElementById('cap-daily-template-results'),
+      document.getElementById('cap-daily-template-chosen'),
+      '/api/notes',
+      'is_template=1'
+    );
+
+    function renderCaptures(caps) {
+      if (!caps.length) {
+        list.innerHTML = '<p class="settings-hint">No captures yet.</p>';
+        return;
+      }
+      list.innerHTML = '';
+      caps.forEach(c => {
+        const el = document.createElement('div');
+        el.className = 'capture-item';
+        const kindLabel = {
+          new_child: 'New note',
+          append_text: 'Append text',
+          attach_file: 'Attach file',
+          daily_note: 'Daily note',
+        }[c.kind] || c.kind;
+        el.innerHTML =
+          `<span class="cap-name">${c.name}</span>` +
+          `<span class="cap-meta">${kindLabel} → ${c.target_title}</span>` +
+          `<button type="button" class="cap-edit" title="Edit">` +
+          `<span class="material-symbols-rounded">edit</span>` +
+          `</button>` +
+          `<button type="button" class="cap-delete" title="Delete">` +
+          `<span class="material-symbols-rounded">delete</span>` +
+          `</button>`;
+        el.querySelector('.cap-edit').addEventListener('click', () => {
+          startEdit(c);
+        });
+        el.querySelector('.cap-delete').addEventListener('click', async () => {
+          if (!confirm('Delete capture "' + c.name + '"?')) return;
+          await fetch(`/captures/${c.id}/delete`, { method: 'POST' });
+          loadCaptures();
+        });
+        list.appendChild(el);
+      });
+    }
+
+    function startEdit(c) {
+      editingId = c.id;
+      nameInput.value = c.name;
+      kindSelect.value = c.kind;
+      updateKindFields();
+      targetId.value = String(c.target_id);
+      targetInput.value = c.target_title;
+      targetInput.style.display = 'none';
+      targetChosen.innerHTML =
+        `<span>${c.target_title}</span>` +
+        `<button type="button" title="Change">×</button>`;
+      targetChosen.style.display = 'flex';
+      targetChosen.querySelector('button').addEventListener('click', () => {
+        targetId.value = '';
+        targetInput.style.display = '';
+        targetInput.value = '';
+        targetChosen.style.display = 'none';
+        targetInput.focus();
+      });
+      if (c.template_id) {
+        templateId.value = String(c.template_id);
+        templateInput.value = c.template_title || '';
+        templateInput.style.display = 'none';
+        templateChosen.innerHTML =
+          `<span>${c.template_title || ''}</span>` +
+          `<button type="button" title="Change">×</button>`;
+        templateChosen.style.display = 'flex';
+        templateChosen.querySelector('button').addEventListener('click', () => {
+          templateId.value = '';
+          templateInput.style.display = '';
+          templateInput.value = '';
+          templateChosen.style.display = 'none';
+          templateInput.focus();
+        });
+      } else {
+        templateId.value = '';
+        templateInput.value = '';
+        templateInput.style.display = '';
+        templateChosen.style.display = 'none';
+        templateChosen.innerHTML = '';
+      }
+      titleTpl.value = c.title_template || '';
+      bodyTpl.value = c.body_template || '';
+      afterSelect.value = c.after_action || 'toast';
+      newAfterSelect.value = (c.kind === 'new_child' && c.after_action) ? c.after_action : 'navigate';
+      const prefixInput = document.getElementById('cap-prefix');
+      if (prefixInput) prefixInput.value = c.text_prefix || '';
+      const suffixInput = document.getElementById('cap-suffix');
+      if (suffixInput) suffixInput.value = c.text_suffix || '';
+
+      if (c.kind === 'daily_note') {
+        document.getElementById('cap-daily-title-tpl').value = c.title_template || '{{date}}';
+        document.getElementById('cap-daily-body-tpl').value = c.body_template || '';
+        
+        const dPrefix = document.getElementById('cap-daily-prefix');
+        if (dPrefix) dPrefix.value = c.text_prefix || '';
+        const dSuffix = document.getElementById('cap-daily-suffix');
+        if (dSuffix) dSuffix.value = c.text_suffix || '';
+        
+        // Handle both "action:nav" and legacy "action" formats
+        const rawAction = c.after_action || 'append_text:stay';
+        let action = rawAction;
+        let afterNav = 'stay';
+        
+        if (rawAction.includes(':')) {
+          const parts = rawAction.split(':');
+          action = parts[0];
+          afterNav = parts[1] || 'stay';
+        }
+        
+        document.getElementById('cap-daily-action').value = action;
+        document.getElementById('cap-daily-after').value = afterNav;
+
+        // ... (rest of the template/chosen logic)
+
+        const dTplInput = document.getElementById('cap-daily-template-input');
+        const dTplId = document.getElementById('cap-daily-template-id');
+        const dTplChosen = document.getElementById('cap-daily-template-chosen');
+        if (c.template_id) {
+          dTplId.value = String(c.template_id);
+          dTplInput.value = c.template_title || '';
+          dTplInput.style.display = 'none';
+          dTplChosen.innerHTML = `<span>${c.template_title || ''}</span><button type="button" title="Change">×</button>`;
+          dTplChosen.style.display = 'flex';
+          dTplChosen.querySelector('button').addEventListener('click', () => {
+            dTplId.value = '';
+            dTplInput.style.display = '';
+            dTplInput.value = '';
+            dTplChosen.style.display = 'none';
+            dTplInput.focus();
+          });
+        } else {
+          dTplId.value = '';
+          dTplInput.value = '';
+          dTplInput.style.display = '';
+          dTplChosen.style.display = 'none';
+          dTplChosen.innerHTML = '';
+        }
+      }
+
+      addDetails.open = true;
+      addDetails.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      saveBtn.textContent = 'Update capture';
+    }
+
+    async function loadCaptures() {
+      try {
+        const r = await fetch('/captures');
+        const caps = await r.json();
+        renderCaptures(caps);
+      } catch (e) {
+        list.innerHTML = '<p class="settings-hint" style="color:var(--danger)">Failed to load captures.</p>';
+      }
+    }
+
+    function resetForm() {
+      nameInput.value = '';
+      kindSelect.value = 'new_child';
+      updateKindFields();
+      targetId.value = '';
+      targetInput.value = '';
+      targetInput.style.display = '';
+      targetChosen.style.display = 'none';
+      targetChosen.innerHTML = '';
+      templateId.value = '';
+      templateInput.value = '';
+      templateInput.style.display = '';
+      templateChosen.style.display = 'none';
+      templateChosen.innerHTML = '';
+      titleTpl.value = '';
+      bodyTpl.value = '';
+      afterSelect.value = 'toast';
+      newAfterSelect.value = 'navigate';
+      const dTplId = document.getElementById('cap-daily-template-id');
+      if (dTplId) dTplId.value = '';
+      const dTplInput = document.getElementById('cap-daily-template-input');
+      if (dTplInput) { dTplInput.value = ''; dTplInput.style.display = ''; }
+      const dTplChosen = document.getElementById('cap-daily-template-chosen');
+      if (dTplChosen) { dTplChosen.style.display = 'none'; dTplChosen.innerHTML = ''; }
+      const dTitle = document.getElementById('cap-daily-title-tpl');
+      if (dTitle) dTitle.value = '{{date}}';
+      const dBody = document.getElementById('cap-daily-body-tpl');
+      if (dBody) dBody.value = '';
+      const dAction = document.getElementById('cap-daily-action');
+      if (dAction) dAction.value = 'append_text';
+      const pre = document.getElementById('cap-prefix');
+      if (pre) pre.value = '';
+      const suf = document.getElementById('cap-suffix');
+      if (suf) suf.value = '';
+      const dPre = document.getElementById('cap-daily-prefix');
+      if (dPre) dPre.value = '';
+      const dSuf = document.getElementById('cap-daily-suffix');
+      if (dSuf) dSuf.value = '';
+    }
+
+    cancelBtn.addEventListener('click', () => {
+      editingId = null;
+      saveBtn.textContent = 'Save capture';
+      resetForm();
+      addDetails.open = false;
+    });
+
+    saveBtn.addEventListener('click', async () => {
+      const name = nameInput.value.trim();
+      const kind = kindSelect.value;
+      const tid = Number(targetId.value);
+      if (!name) { alert('Give the capture a name.'); return; }
+      if (kind !== 'daily_note' && !tid) { alert('Pick a target note.'); return; }
+
+      // Helper: safely read a field's value, or '' if it doesn't exist
+      const val = (id) => {
+        const el = document.getElementById(id);
+        return el ? el.value : '';
+      };
+
+      const payload = { name, kind };
+      if (kind === 'new_child') {
+        payload.target_id = tid;
+        payload.title_template = titleTpl.value;
+        payload.body_template = bodyTpl.value;
+        payload.after_action = newAfterSelect.value || 'navigate';
+        payload.text_prefix = val('cap-prefix');
+        payload.text_suffix = val('cap-suffix');
+        if (templateId.value) payload.template_id = Number(templateId.value);
+      } else if (kind === 'daily_note') {
+        const action = val('cap-daily-action') || 'append_text';
+        const afterNav = val('cap-daily-after') || 'stay';
+        
+        payload.title_template = val('cap-daily-title-tpl') || '{{date}}';
+        payload.body_template = val('cap-daily-body-tpl');
+        payload.after_action = `${action}:${afterNav}`; // <--- COMBINED
+        payload.text_prefix = val('cap-daily-prefix');
+        payload.text_suffix = val('cap-daily-suffix');
+        
+        const dailyTplId = val('cap-daily-template-id');
+        if (dailyTplId) payload.template_id = Number(dailyTplId);
+      } else {
+        payload.target_id = tid;
+        payload.after_action = afterSelect.value;
+        payload.text_prefix = val('cap-prefix');
+        payload.text_suffix = val('cap-suffix');
+      }
+
+      try {
+        const url = editingId
+          ? `/captures/${editingId}/update`
+          : '/captures';
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          throw new Error(e.error || 'failed');
+        }
+        editingId = null;
+        saveBtn.textContent = 'Save capture';
+        resetForm();
+        addDetails.open = false;
+        loadCaptures();
+      } catch (err) {
+        alert('Failed to save: ' + err.message);
+      }
+    });
+
+    loadCaptures();
+  })();
+  // --- Wire up Template Pickers ---
+  function wireTemplatePicker(inputId, hiddenId, resultsId, chosenId) {
+    const input = document.getElementById(inputId);
+    const hidden = document.getElementById(hiddenId);
+    const results = document.getElementById(resultsId);
+    const chosen = document.getElementById(chosenId);
+    
+    if (!input || !hidden || !results || !chosen) return;
+
+    let timer = null;
+    let items = [];
+    let idx = -1;
+
+    if (hidden.value) {
+      input.style.display = 'none';
+      chosen.style.display = 'flex';
+      chosen.querySelector('button')?.addEventListener('click', () => {
+        hidden.value = '';
+        input.style.display = '';
+        input.value = '';
+        chosen.style.display = 'none';
+        input.focus();
+      });
+    }
+
+    function closeList() {
+      results.classList.remove('open');
+      results.innerHTML = '';
+      idx = -1;
+    }
+
+    function render() {
+      if (!items.length) { closeList(); return; }
+      results.innerHTML = items.map((n, i) =>
+        `<div class="ac-item${i === idx ? ' sel' : ''}" data-id="${n.id}" data-title="${encodeURIComponent(n.title)}">${n.title}</div>`
+      ).join('');
+      results.classList.add('open');
+      results.querySelectorAll('.ac-item').forEach(el => {
+        el.addEventListener('mousedown', (ev) => {
+          ev.preventDefault();
+          choose(Number(el.dataset.id), decodeURIComponent(el.dataset.title));
+        });
+      });
+    }
+
+    function choose(id, title) {
+      hidden.value = String(id);
+      input.value = title;
+      input.style.display = 'none';
+      chosen.innerHTML = `<span>${title}</span><button type="button" title="Change">×</button>`;
+      chosen.style.display = 'flex';
+      chosen.querySelector('button').addEventListener('click', () => {
+        hidden.value = '';
+        input.style.display = '';
+        input.value = '';
+        chosen.style.display = 'none';
+        input.focus();
+      });
+      closeList();
+    }
+
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const q = input.value.trim();
+        try {
+          const r = await fetch(`/api/notes?q=${encodeURIComponent(q)}&limit=15&is_template=1`);
+          items = await r.json();
+          idx = 0;
+          render();
+        } catch (e) { closeList(); }
+      }, 100);
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') { idx = Math.min(idx + 1, items.length - 1); render(); e.preventDefault(); }
+      else if (e.key === 'ArrowUp') { idx = Math.max(idx - 1, 0); render(); e.preventDefault(); }
+      else if (e.key === 'Enter' && items[idx]) { e.preventDefault(); choose(items[idx].id, items[idx].title); }
+      else if (e.key === 'Escape') closeList();
+    });
+
+    input.addEventListener('blur', () => {
+      setTimeout(closeList, 200);
+    });
+  }
+
+  wireTemplatePicker('default-template-input', 'default-template-id', 'default-template-results', 'default-template-chosen');
+  wireTemplatePicker('task-template-input', 'task-template-id', 'task-template-results', 'task-template-chosen');  
+  wireTemplatePicker('daily-note-template-input', 'daily-note-template-id', 'daily-note-template-results', 'daily-note-template-chosen');  
+  
+  // ---------- Back gesture closes open modals ----------
+  (function () {
+    let sentinelPushed = false;
+
+    function anyModalOpen() {
+      return !!document.querySelector('.modal.open');
+    }
+
+    function closeAllModals() {
+      document.querySelectorAll('.modal.open').forEach(m => m.classList.remove('open'));
+    }
+
+    const modalObserver = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.type !== 'attributes' || m.attributeName !== 'class') continue;
+        const el = m.target;
+        if (!el.classList) continue;
+        if (el.classList.contains('modal') && el.classList.contains('open')) {
+          if (!sentinelPushed) {
+            history.pushState({ modalOpen: true }, '');
+            sentinelPushed = true;
+          }
+        }
+      }
+    });
+
+    document.querySelectorAll('.modal').forEach(m => {
+      modalObserver.observe(m, { attributes: true, attributeFilter: ['class'] });
+    });
+
+    window.addEventListener('popstate', () => {
+      if (anyModalOpen()) {
+        closeAllModals();
+        sentinelPushed = false;
+      }
+    });
+  })();    
+  
+  // ---------- Back gesture exits edit mode (mobile only) ----------
+  //
+  // On mobile, when CodeMirror has focus (keyboard up), we push a history
+  // sentinel. Pressing Android back/back-gesture pops it and instead of
+  // navigating away we blur the editor and flip to preview mode — which
+  // hides the keyboard. A second back press then navigates normally.
+  //
+  // This piggybacks on the existing popstate handler used for modals:
+  // if a modal is open, that handler runs first and closes the modal;
+  // our sentinel-flag check then no-ops because `wasEditSentinel` is
+  // false (the popped state was the modal sentinel, not ours).
+  //
+  // Everything here is mobile-only and no-ops on desktop.
+  (function () {
+    const isMobile = () => window.matchMedia('(max-width: 720px)').matches;
+
+    let editSentinelPushed = false;
+    let blurInProgress = false;
+
+    function editorHasFocus() {
+      const content = document.getElementById('note-content');
+      if (!content) return false;
+      const cm = content.querySelector('.cm-content');
+      return !!(cm && (cm === document.activeElement || content.contains(document.activeElement)));
+    }
+
+    function exitEditMode() {
+      const bodyEl = document.getElementById('editor-body');
+      const toggleBtn = document.getElementById('toggle-preview');
+      if (!bodyEl || !toggleBtn) return;
+
+      // Already in preview? Nothing to do.
+      if (!bodyEl.classList.contains('split')) return;
+
+      // 1. Blur the focused element (CodeMirror's contentDOM, or the
+      //    note title if the user was renaming).
+      if (document.activeElement && document.activeElement.blur) {
+        try { document.activeElement.blur(); } catch (e) {}
+      }
+
+      // 2. Give Android a tick to actually dismiss the keyboard before
+      //    the layout changes, otherwise the viewport resize races the
+      //    split-class flip and the preview jumps.
+      setTimeout(() => {
+        if (!bodyEl.classList.contains('split')) return;
+        bodyEl.classList.remove('split');
+        // Mirror the existing preview-tap handler's bookkeeping.
+        if (typeof updatePreviewBtn === 'function') updatePreviewBtn();
+        // No-transition so the split->single column change is instant.
+        document.documentElement.classList.add('no-transition');
+        setTimeout(() => document.documentElement.classList.remove('no-transition'), 50);
+      }, 40);
+    }
+
+    function pushEditSentinel() {
+      if (editSentinelPushed) return;
+      history.pushState({ notesEditMode: true }, '');
+      editSentinelPushed = true;
+    }
+
+    function popEditSentinelIfTop() {
+      if (!editSentinelPushed) return;
+      // If the current history.state is ours, pop it silently so we
+      // don't leave a phantom entry the user has to press back through.
+      if (history.state && history.state.notesEditMode) {
+        history.back();
+      }
+      editSentinelPushed = false;
+    }
+
+    // Attach focus listener to CodeMirror once the editor mounts.
+    // The editor mounts synchronously inside the outer IIFE via
+    // createEditor(), but we're in a separate IIFE and can't reach
+    // `editor` directly, so we poll once for the CM node.
+    function wireEditorFocusTracking() {
+      const content = document.getElementById('note-content');
+      if (!content) return false;
+      const cm = content.querySelector('.cm-content');
+      if (!cm) return false;
+
+      // Focus → push sentinel (only on mobile, only while in edit mode).
+      cm.addEventListener('focus', () => {
+        if (!isMobile()) return;
+        const bodyEl = document.getElementById('editor-body');
+        if (!bodyEl || !bodyEl.classList.contains('split')) return;
+        // Don't stack sentinels if a modal already pushed one.
+        const modalOpen = !!document.querySelector('.modal.open');
+        if (modalOpen) return;
+        pushEditSentinel();
+      });
+
+      // Blur → drop the sentinel, but only if we're not blurring
+      // because of our own exitEditMode (the popstate handler will
+      // consume the history entry itself in that case).
+      cm.addEventListener('blur', () => {
+        if (blurInProgress) return;
+        if (!editSentinelPushed) return;
+        // If the user blurred by tapping the preview, the preview-tap
+        // handler will run its own logic; we still want to clean up
+        // the sentinel so back navigation works normally afterwards.
+        popEditSentinelIfTop();
+      });
+
+      return true;
+    }
+
+    if (!wireEditorFocusTracking()) {
+      // Editor not mounted yet (e.g. map note, empty note page,
+      // search page) — poll briefly. If it never mounts, we just
+      // never wire up, which is correct for non-editor pages.
+      let tries = 0;
+      const iv = setInterval(() => {
+        tries++;
+        if (wireEditorFocusTracking() || tries > 40) clearInterval(iv);
+      }, 100);
+    }
+
+    // Hook into the same popstate the modal handler uses. Because we
+    // registered our listener *after* the modal handler's listener,
+    // the modal handler runs first. If a modal was open, it closes
+    // the modal and consumes its own sentinel — in that case our
+    // sentinel is still on the history stack, but `wasEditSentinel`
+    // reflects only the state that was just popped, so we correctly
+    // no-op.
+    window.addEventListener('popstate', (event) => {
+      // Was the state we just popped ours?
+      const wasEditSentinel = !!(event.state && event.state.notesEditMode);
+
+      // If a modal was open, the modal handler already closed it. In
+      // that case the state being popped was the modal's sentinel, not
+      // ours, so wasEditSentinel is false. No-op.
+      if (!wasEditSentinel) return;
+
+      // Consume the sentinel flag and exit edit mode.
+      editSentinelPushed = false;
+      blurInProgress = true;
+      try {
+        exitEditMode();
+      } finally {
+        // Reset the flag on the next tick so the editor's blur
+        // listener doesn't try to pop a sentinel that's already gone.
+        setTimeout(() => { blurInProgress = false; }, 100);
+      }
+    });
+
+    // Also expose a helper so the preview toggle button and the
+    // preview-tap handler can clean up the sentinel when the user
+    // exits edit mode manually. Nothing calls this yet — the blur
+    // listener already handles it — but it's here for future use.
+    window.__exitEditModeSentinel = popEditSentinelIfTop;
+  })();  
+  
+  // ---------- Calendar Modal ----------
+  (function () {
+    const calBtn = document.getElementById('calendar-btn');
+    const calModal = document.getElementById('calendar-modal');
+    const calGrid = document.getElementById('calendar-grid');
+    const calLabel = document.getElementById('cal-month-label');
+    const calPrev = document.getElementById('cal-prev');
+    const calNext = document.getElementById('cal-next');
+
+    if (!calBtn || !calModal) return;
+
+    let currentYear = new Date().getFullYear();
+    let currentMonth = new Date().getMonth();
+
+    function renderCalendar() {
+      calGrid.innerHTML = '';
+      
+      const date = new Date(currentYear, currentMonth, 1);
+      const monthName = date.toLocaleString('default', { month: 'long' });
+      calLabel.textContent = `${monthName} ${currentYear}`;
+
+      // Day headers (S, M, T, W, T, F, S)
+      const days = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+      days.forEach(d => {
+        const el = document.createElement('div');
+        el.className = 'cal-day-header';
+        el.textContent = d;
+        calGrid.appendChild(el);
+      });
+
+      const firstDay = date.getDay();
+      const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+      
+      // Empty slots for days before the 1st
+      for (let i = 0; i < firstDay; i++) {
+        const el = document.createElement('div');
+        el.className = 'cal-day empty';
+        calGrid.appendChild(el);
+      }
+
+      const today = new Date();
+      const isCurrentMonth = today.getFullYear() === currentYear && today.getMonth() === currentMonth;
+
+      for (let day = 1; day <= daysInMonth; day++) {
+        const el = document.createElement('div');
+        el.className = 'cal-day';
+        el.textContent = day;
+        
+        if (isCurrentMonth && day === today.getDate()) {
+          el.classList.add('today');
+        }
+
+        el.addEventListener('click', () => {
+          // Format as YYYY-MM-DD (local time, not UTC, to avoid off-by-one)
+          const pad = n => String(n).padStart(2, '0');
+          const dateStr = `${currentYear}-${pad(currentMonth + 1)}-${pad(day)}`;
+          
+          // Navigate to the daily note URL
+          localStorage.setItem('sidebar-collapsed', '1');
+          window.location.href = `/daily-note?date=${dateStr}&nofocus=1`;
+        });
+
+        calGrid.appendChild(el);
+      }
+    }
+
+    function openCal() {
+      // Reset to current month each time it opens
+      const now = new Date();
+      currentYear = now.getFullYear();
+      currentMonth = now.getMonth();
+      renderCalendar();
+      calModal.classList.add('open');
+    }
+
+    calBtn.addEventListener('click', openCal);
+    calModal.querySelectorAll('[data-close]').forEach(el => {
+      el.addEventListener('click', () => calModal.classList.remove('open'));
+    });
+
+    calPrev.addEventListener('click', () => {
+      currentMonth--;
+      if (currentMonth < 0) { currentMonth = 11; currentYear--; }
+      renderCalendar();
+    });
+    calNext.addEventListener('click', () => {
+      currentMonth++;
+      if (currentMonth > 11) { currentMonth = 0; currentYear++; }
+      renderCalendar();
+    });    
+  })();
+  
+  // ---------- Pinned Note (Server-side) ----------
+  const pinBtn = document.getElementById('pin-note-btn');
+  
+  if (pinBtn && window.NOTE_ID) {
+    let isPinned = pinBtn.classList.contains('primary');
+
+    pinBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      
+      try {
+        if (isPinned) {
+          await fetch(`/api/pinned/unpin/${window.NOTE_ID}`, { method: 'POST' });
+          pinBtn.classList.remove('primary');
+          isPinned = false;
+        } else {
+          await fetch('/api/pinned', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: window.NOTE_ID })
+          });
+          pinBtn.classList.add('primary');
+          isPinned = true;
+        }
+        
+        // Refresh the sidebar instantly
+        if (typeof window.__refreshTree === 'function') {
+          await window.__refreshTree();
+        }
+        
+      } catch (err) {
+        alert('Failed to update pin: ' + err.message);
+      }
+    });
+  }
+
+  // ---------- Search Results Context Menu ----------
+  document.addEventListener('click', (e) => {
+    const menuBtn = e.target.closest('.search-result-menu-btn');
+    if (!menuBtn) return;
+
+    e.preventDefault();
+    e.stopPropagation(); // Stop the card from opening the note
+
+    // Pass the button to the existing context menu function!
+    if (typeof openNoteMenuPopover === 'function') {
+      openNoteMenuPopover(menuBtn);
+    }
+  }, true);  
+  
+})();
+
+/* ============================================================
+   Part 2: note editor
+   ============================================================ */
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  
+// ---------- Tab System ----------
+  try {
+    (function () {
+      const tabBar = document.getElementById('editor-tab-bar');
+      if (!tabBar) return;
+      
+      
+
+      const TABS_KEY = 'open-tabs';
+      const urlParams = new URLSearchParams(window.location.search);
+      const isNewTabHint = urlParams.get('newtab') === '1';
+      const isBackNav = urlParams.get('back') === '1';
+
+      let tabs = [];
+      try { 
+        tabs = JSON.parse(localStorage.getItem(TABS_KEY) || '[]'); 
+      } catch(e) { tabs = []; }
+
+      tabs = tabs.map(t => ({
+        id: t.id,
+        title: t.title || 'Untitled',
+        stack: Array.isArray(t.stack) ? t.stack : [t.id],
+        searchQuery: t.searchQuery || null
+      }));
+
+      const currentNoteId = window.NOTE_ID || null;
+      const currentSearchQuery = (currentNoteId === 'search-unsaved') 
+        ? window.location.search.substring(1) 
+        : null;
+
+      let currentTabIdx = tabs.findIndex(t => {
+        if (!currentNoteId) return false;
+        return t.stack.includes(currentNoteId);
+      });
+
+      if (isNewTabHint) {
+        if (currentTabIdx !== -1) {
+          const existing = tabs[currentTabIdx];
+          existing.stack = existing.stack.filter(id => id !== currentNoteId);
+          if (existing.stack.length === 0) {
+            tabs.splice(currentTabIdx, 1);
+          }
+        }
+        tabs.push({
+          id: currentNoteId || 'empty',
+          title: currentNoteId ? (window.NOTE_TITLE || 'Untitled') : 'Empty',
+          stack: [currentNoteId || 'empty'],
+          searchQuery: currentSearchQuery
+        });
+        currentTabIdx = tabs.length - 1;
+
+        urlParams.delete('newtab');
+        const newUrl = window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '');
+        window.history.replaceState({}, '', newUrl);
+
+      } else if (currentTabIdx !== -1) {
+        const tab = tabs[currentTabIdx];
+        
+        if (isBackNav) {
+          tab.title = window.NOTE_TITLE || tab.title;
+          if (currentSearchQuery) tab.searchQuery = currentSearchQuery;
+          
+          urlParams.delete('back');
+          const newUrl = window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '');
+          window.history.replaceState({}, '', newUrl);
+        } else {
+          if (tab.stack[tab.stack.length - 1] !== currentNoteId) {
+            tab.stack.push(currentNoteId);
+          }
+          if (currentNoteId) {
+            tab.title = window.NOTE_TITLE || tab.title;
+          }
+          if (currentSearchQuery) tab.searchQuery = currentSearchQuery;
+        }
+
+      } else {
+        // ---------- NOTE OR SEARCH, NOT IN ANY TAB ----------
+        // Default: reuse the current/last tab. Only the + button creates new tabs
+        // (which is handled by `isNewTabHint` above).
+        if (tabs.length === 0) {
+          tabs.push({
+            id: currentNoteId || 'empty',
+            title: currentNoteId ? (window.NOTE_TITLE || 'Untitled') : 'Empty',
+            stack: [currentNoteId || 'empty'],
+            searchQuery: currentSearchQuery
+          });
+          currentTabIdx = 0;
+        } else {
+          // Reuse the current tab (or the last one if we don't know which is current)
+          const targetTabIdx = currentTabIdx !== -1 ? currentTabIdx : tabs.length - 1;
+          const targetTab = tabs[targetTabIdx];
+          
+          // If a new note is being pushed onto a search tab, replace the search tab
+          if (String(targetTab.id).startsWith('search-')) {
+            // Replace the search tab entirely (can't stack a note on a search)
+            targetTab.id = currentNoteId || 'empty';
+            targetTab.title = currentNoteId ? (window.NOTE_TITLE || 'Untitled') : 'Empty';
+            targetTab.stack = [currentNoteId || 'empty'];
+            targetTab.searchQuery = currentSearchQuery;
+          } else {
+            // Normal: push the note onto the current tab's stack
+            targetTab.stack.push(currentNoteId || 'empty');
+            targetTab.id = currentNoteId || 'empty';
+            targetTab.title = currentNoteId ? (window.NOTE_TITLE || 'Untitled') : 'Empty';
+            if (currentSearchQuery) targetTab.searchQuery = currentSearchQuery;
+          }
+          currentTabIdx = targetTabIdx;
+        }
+      }
+
+      localStorage.setItem(TABS_KEY, JSON.stringify(tabs));
+
+      function saveTabs() {
+        localStorage.setItem(TABS_KEY, JSON.stringify(tabs));
+      }
+
+      function renderTabs() {
+        tabBar.innerHTML = '';
+        tabBar.parentElement.style.display = 'flex';
+
+        tabs.forEach((t, idx) => {
+          const el = document.createElement('div');
+          el.className = 'editor-tab' + (idx === currentTabIdx ? ' active' : '');
+          
+          // Force tab background colors via inline styles
+          if (idx === currentTabIdx) {
+            el.style.background = 'var(--bg-alt)'; // Active tab: lighter
+            el.style.color = 'var(--accent)';
+          } else {
+            el.style.background = 'var(--bg)';     // Inactive tab: darker
+            el.style.color = 'var(--text-dim)';
+          }        
+          
+          const label = document.createElement('span');
+          label.className = 'tab-title';
+          label.textContent = (t.id === 'empty' || t.title === 'Empty') ? 'Empty' : t.title;
+          el.appendChild(label);
+
+          const closeBtn = document.createElement('button');
+          closeBtn.className = 'tab-close';
+          closeBtn.innerHTML = '<span class="material-symbols-rounded">close</span>';
+          closeBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+
+            if (tabs.length === 1) return;
+
+            const wasActive = (idx === currentTabIdx);
+            tabs.splice(idx, 1);
+            saveTabs();
+            
+            if (wasActive) {
+              const nextIdx = Math.min(idx, tabs.length - 1);
+              const target = tabs[nextIdx];
+              const targetNote = target.stack[target.stack.length - 1];
+
+              // Try in-place swap first if both sides are plain notes.
+              const currentIsNote = window.NOTE_ID && /^\d+$/.test(String(window.NOTE_ID));
+              const targetIsNote  = targetNote && /^\d+$/.test(String(targetNote));
+
+              if (currentIsNote && targetIsNote && typeof window.__swapNoteInPlace === 'function') {
+                if (typeof window.__savePending === 'function' && window.__savePending() && typeof window.__flushSave === 'function') {
+                  try { await window.__flushSave(); } catch (e) {}
+                }
+                const ok = await window.__swapNoteInPlace(Number(targetNote));
+                if (ok) {
+                  currentTabIdx = nextIdx;
+                  renderTabs();
+                } else {
+                  location.replace(`/?note=${targetNote}&back=1`);
+                }
+                return;
+              }
+
+              // Fallback: full navigation (search tab, empty, map note)
+              window.instantNavigate?.();
+              if (targetNote === 'empty') {
+                location.replace(`/?empty=1&back=1`);
+              } else if (targetNote === 'search-unsaved') {
+                if (target.searchQuery) {
+                  location.replace(`/?${target.searchQuery}&back=1`);
+                } else {
+                  location.replace(`/`);
+                }
+              } else if (String(targetNote).startsWith('search-')) {
+                const searchId = String(targetNote).replace('search-', '');
+                location.replace(`/?search=${searchId}&back=1`);
+              } else {
+                location.replace(`/?note=${targetNote}&back=1`);
+              }
+            } else {
+              if (idx < currentTabIdx) currentTabIdx--;
+              renderTabs();
+            }
+          });
+          el.appendChild(closeBtn);
+
+          el.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            if (idx === currentTabIdx) return;
+            
+            if (typeof window.__savePending === 'function' && window.__savePending() && typeof window.__flushSave === 'function') {
+              try { await window.__flushSave(); } catch(e) {}
+            }
+            
+            const targetNote = t.stack[t.stack.length - 1];
+            
+            const currentIsNote = window.NOTE_ID && /^\d+$/.test(String(window.NOTE_ID));
+            const targetIsNote  = targetNote && /^\d+$/.test(String(targetNote));
+            
+            if (currentIsNote && targetIsNote && typeof window.__swapNoteInPlace === 'function') {
+              const ok = await window.__swapNoteInPlace(Number(targetNote));
+              if (ok) {
+                currentTabIdx = idx;
+                renderTabs();
+                return;
+              }
+            }
+            
+            window.instantNavigate?.();
+            
+            if (targetNote === 'empty') {
+              window.location.href = `/?empty=1`;
+            } else if (targetNote === 'search-unsaved') {
+              if (t.searchQuery) {
+                window.location.href = `/?${t.searchQuery}`;
+              } else {
+                window.location.href = `/`;
+              }
+            } else if (String(targetNote).startsWith('search-')) {
+              const searchId = String(targetNote).replace('search-', '');
+              window.location.href = `/?search=${searchId}`;
+            } else {
+              window.location.href = `/?note=${targetNote}`;
+            }
+          });
+
+          tabBar.appendChild(el);
+        });
+      }
+
+      renderTabs();
+
+      const titleEl = document.getElementById('note-title');
+      if (titleEl) {
+        titleEl.addEventListener('input', () => {
+          const tab = tabs[currentTabIdx];
+          if (tab) {
+            tab.title = titleEl.value || 'Untitled';
+            saveTabs();
+            const activeTabEl = tabBar.querySelector('.editor-tab.active .tab-title');
+            if (activeTabEl) activeTabEl.textContent = tab.title;
+          }
+        });
+      }
+
+      const tabAddBtn = document.getElementById('tab-add-btn');
+      if (tabAddBtn) {
+        tabAddBtn.addEventListener('click', () => {
+          if (typeof window.__openQuickSwitcherInNewTab === 'function') {
+            window.__openQuickSwitcherInNewTab();
+          }
+        });
+      }
+    })();
+  } catch (e) {
+    console.warn('Tab system failed to load', e);
+  }
+  
+  // Stop here if we are on the Empty page OR a Search page
+  if (!window.NOTE_ID || String(window.NOTE_ID).startsWith('search-')) return;   
+  
+  // Generate a stable per-tab client ID (survives the session)
+  if (!sessionStorage.getItem('client_id')) {
+    sessionStorage.setItem('client_id', Math.random().toString(36).slice(2) + Date.now().toString(36));
+  }
+  const CLIENT_ID = sessionStorage.getItem('client_id');  
+
+  try {
+    const LAST_KEY = 'last-note-id';
+    const PREV_KEY = 'prev-note-id';
+    const lastSeen = sessionStorage.getItem(LAST_KEY);
+    if (lastSeen && String(lastSeen) !== String(window.NOTE_ID)) {
+      sessionStorage.setItem(PREV_KEY, lastSeen);
+    }
+    sessionStorage.setItem(LAST_KEY, String(window.NOTE_ID));
+  } catch (e) {}
+
+  const layout         = document.querySelector('.layout');
+  const titleEl        = $('#note-title');
+  const dueEl          = $('#note-due');
+  const dueBtn         = $('#due-btn');
+  const dueBtnIcon     = $('#due-btn-icon');
+  const previewEl      = $('#preview-body');
+  const previewWrap    = document.querySelector('.preview-wrap');
+  const propTable      = $('#prop-table');
+  const bodyEl         = $('#editor-body');
+  const toggleBtn      = $('#toggle-preview');
+  const saveIndicator  = $('#save-indicator');
+  const editorHost     = $('#note-content');
+  const reminderBadge  = $('#reminder-badge');
+  const reminderText   = $('#reminder-badge-text');
+
+  let editor = null;
+
+  let acEl = $('#link-autocomplete');
+  if (!acEl) {
+    acEl = document.createElement('div');
+    acEl.id = 'link-autocomplete';
+    acEl.className = 'autocomplete hidden';
+    document.body.appendChild(acEl);
+  }
+
+  let properties = { ...(window.NOTE_PROPS || {}) };
+  let linkIds    = new Set(window.NOTE_LINKS || []);
+  let allPropValues = window.ALL_PROP_VALUES || {};
+
+  function isPlaceholderKey(k) {
+    return /^_new_\d+$/.test(k);
+  }
+  let placeholderCounter = 0;
+  function newPlaceholderKey() {
+    let k;
+    do { k = '_new_' + (++placeholderCounter); } while (properties[k] !== undefined);
+    return k;
+  }
+
+  function utcToLocalInput(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+  function localInputToUtc(v) { return v ? new Date(v).toISOString() : null; }
+
+  const dueDateEl = document.getElementById('note-due-date');
+  const dueTimeEl = document.getElementById('note-due-time');
+
+  if (dueEl && dueEl.dataset.utc) {
+    const d = new Date(dueEl.dataset.utc);
+    const p = n => String(n).padStart(2, '0');
+    if (dueDateEl) dueDateEl.value = `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+    if (dueTimeEl) dueTimeEl.value = `${p(d.getHours())}:${p(d.getMinutes())}`;
+    dueEl.value = utcToLocalInput(dueEl.dataset.utc);
+  }
+
+  function updateDueBtnState() {
+    const has = dueEl && !!dueEl.value;
+    
+    // Update the hidden action-bar button
+    if (dueBtn && dueBtnIcon) {
+      dueBtn.classList.toggle('has-due', has);
+      dueBtnIcon.textContent = has ? 'alarm_on' : 'alarm_add';
+    }
+
+    // Update the new header button
+    const headerBtn = document.getElementById('header-due-btn');
+    if (headerBtn) {
+      const iconSpan = headerBtn.querySelector('.material-symbols-rounded');
+      if (has) {
+        headerBtn.classList.add('has-due');
+        if (iconSpan) iconSpan.textContent = 'alarm_on';
+      } else {
+        headerBtn.classList.remove('has-due');
+        if (iconSpan) iconSpan.textContent = 'alarm_add';
+      }
+    }
+  }
+
+  function updateReminderBadge() {
+    if (!reminderBadge || !reminderText) return;
+    if (!dueEl || !dueEl.value) {
+      reminderBadge.classList.remove('show');
+      return;
+    }
+    const d = new Date(dueEl.value);
+    const formatted = d.toLocaleString([], {
+      year: 'numeric', 
+      month: '2-digit', 
+      day: '2-digit',
+      hour: '2-digit', 
+      minute: '2-digit',
+      hour12: false /* <--- THIS FORCES 24-HOUR FORMAT */
+    });
+    reminderText.textContent = formatted;
+    reminderBadge.classList.add('show');
+  }
+
+  function splitValues(raw) {
+    const out = new Set();
+    (raw || []).forEach(v => {
+      const s = String(v);
+      out.add(s);
+      s.split(',').forEach(p => {
+        const t = p.trim();
+        if (t) out.add(t);
+      });
+    });
+    return [...out];
+  }
+
+  function populateKeyList() {
+    const dl = $('#prop-keys');
+    if (!dl) return;
+    dl.innerHTML = '';
+    Object.keys(allPropValues).sort().forEach(k => {
+      const opt = document.createElement('option');
+      opt.value = k; dl.appendChild(opt);
+    });
+  }
+
+  function populateValueList(key) {
+    const dl = $('#prop-values');
+    if (!dl) return;
+    dl.innerHTML = '';
+    splitValues(allPropValues[key] || []).forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v;
+      dl.appendChild(opt);
+    });
+  }
+
+  function focusEditorSafely() {
+    if (bodyEl.classList.contains('split') && window.matchMedia('(max-width: 720px)').matches) {
+      bodyEl.classList.remove('split');
+      updatePreviewBtn();
+    }
+    void bodyEl.offsetHeight;
+    const cm = document.querySelector('#note-content .cm-content');
+    if (cm) cm.focus();
+    if (editor) editor.view.focus();
+  }
+
+  function moveFocusForward(el) {
+    const inputs = [...document.querySelectorAll('.props-strip input')];
+    const idx = inputs.indexOf(el);
+    if (idx >= 0 && idx < inputs.length - 1) {
+      const next = inputs[idx + 1];
+      next.focus();
+      if (typeof next.select === 'function') {
+        try { next.select(); } catch (e) {}
+      }
+      return;
+    }
+    focusEditorSafely();
+  }
+
+  function makeDateTimePicker(kind, valInput, key) {
+    const btn = document.createElement('button');
+    btn.className = kind === 'date' ? 'prop-date' : 'prop-time';
+    btn.title = kind === 'date' ? 'Pick date' : 'Pick time';
+    btn.type = 'button';
+    btn.innerHTML = `<span class="material-symbols-rounded">${kind === 'date' ? 'event' : 'schedule'}</span>`;
+
+    const hidden = document.createElement('input');
+    hidden.type = kind === 'date' ? 'date' : 'time';
+    hidden.style.position = 'absolute';
+    hidden.style.opacity = '0';
+    hidden.style.pointerEvents = 'none';
+    hidden.style.width = '0';
+    hidden.style.height = '0';
+    btn.appendChild(hidden);
+
+    const cur = String(valInput.value || '').trim();
+    if (kind === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(cur)) {
+      hidden.value = cur;
+    } else if (kind === 'time' && /^\d{1,2}:\d{2}/.test(cur)) {
+      hidden.value = cur.slice(0, 5);
+    }
+
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      try { hidden.showPicker(); }
+      catch (err) { hidden.click(); }
+    });
+
+    hidden.addEventListener('change', () => {
+      const v = hidden.value;
+      if (!v) return;
+      valInput.value = v;
+      properties[key] = v;
+      
+      // Find the row and trigger the chips re-render
+      const row = btn.closest('.prop-row');
+      if (row && typeof row._renderChips === 'function') {
+        row._renderChips();
+      }
+      
+      scheduleSave();
+    });
+
+    return btn;
+  }
+
+  let pendingFocus = null;
+  
+  // Cleanup rule: if `due` is missing or empty, clear `time` too.
+  // Called whenever a due/time property changes.
+  function enforceDateTimePairing() {
+    const dueVal = String(properties['due'] || '').trim();
+    const timeVal = String(properties['time'] || '').trim();
+
+    // If time exists but due doesn't, remove time (orphan)
+    if (timeVal && !dueVal) {
+      delete properties['time'];
+      clearReminderSilently();
+    }
+    // If due exists but is invalid (not YYYY-MM-DD), remove time too
+    if (dueVal && !/^\d{4}-\d{2}-\d{2}$/.test(dueVal)) {
+      if (timeVal) {
+        delete properties['time'];
+      }
+      clearReminderSilently();
+    }
+  }  
+  
+  // Remove any property rows where both key and value are empty.
+  // Returns true if anything was removed.
+  function sweepEmptyProperties() {
+    let changed = false;
+    for (const k of Object.keys(properties)) {
+      const keyEmpty = isPlaceholderKey(k) || !String(k).trim();
+      const valEmpty = !String(properties[k] || '').trim();
+      if (keyEmpty && valEmpty) {
+        delete properties[k];
+        changed = true;
+      }
+    }
+    return changed;
+  }  
+  
+
+  // ============================================================
+  // In-place note swap (Phase 1: note↔note only)
+  // ============================================================
+  // Swaps the current editor's note for another note without a
+  // full page navigation. Only handles note↔note. Anything else
+  // (search tab, map note, empty page) falls back to a real
+  // navigation by the caller.
+
+  let _swapInProgress = false;
+
+  function _spaLog(...args) {
+    if (window.__spaDebug) console.log('[spa]', ...args);
+  }
+
+  function _isPlainNoteId(id) {
+    return typeof id === 'number' || /^\d+$/.test(String(id));
+  }
+
+  function applyNoteState(data) {
+    properties = { ...(data.properties || {}) };
+    linkIds    = new Set(data.link_ids || []);
+
+    titleEl.value = data.title || '';
+
+    const dueUtc = data.due_at || '';
+    dueEl.dataset.utc = dueUtc;
+    if (dueUtc) {
+      const d = new Date(dueUtc);
+      const p = n => String(n).padStart(2, '0');
+      dueEl.value = `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+      if (dueDateEl) dueDateEl.value = `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+      if (dueTimeEl) dueTimeEl.value = `${p(d.getHours())}:${p(d.getMinutes())}`;
+    } else {
+      dueEl.value = '';
+      if (dueDateEl) dueDateEl.value = '';
+      if (dueTimeEl) dueTimeEl.value = '';
+    }
+
+    window.NOTE_ID         = data.id;
+    window.NOTE_TITLE      = data.title || '';
+    window.NOTE_PROPS      = data.properties || {};
+    window.NOTE_UPDATED_AT = data.updated_at || '';
+    window.NOTE_DUE_AT     = dueUtc;
+    window.IS_TEMPLATE     = !!data.is_template;
+    window.HAS_CHILDREN    = !!data.has_children;
+
+    allPropValues = window.ALL_PROP_VALUES || allPropValues;
+  }
+
+  function updateNoteChrome(data) {
+    const tplBtn = $('#toggle-template');
+    if (tplBtn) {
+      const icon = tplBtn.querySelector('.material-symbols-rounded');
+      if (data.is_template) {
+        tplBtn.classList.add('primary');
+        if (icon) icon.textContent = 'bookmark_remove';
+        tplBtn.title = 'Unmark as template';
+      } else {
+        tplBtn.classList.remove('primary');
+        if (icon) icon.textContent = 'bookmark';
+        tplBtn.title = 'Mark as template';
+      }
+    }
+
+    const blankBtn = $('#toggle-blank-title');
+    if (blankBtn) {
+      blankBtn.classList.toggle('primary', !!data.blank_title_on_use);
+      blankBtn.title = data.blank_title_on_use
+        ? 'Blank title on use'
+        : 'Use template title on use';
+    }
+
+    const parentLabel = document.getElementById('parent-picker-label');
+    if (parentLabel) {
+      parentLabel.textContent = data.parent_title || 'Top level';
+    }
+
+    const goToParentBtn = document.getElementById('go-to-parent-btn');
+    if (goToParentBtn) {
+      goToParentBtn.style.display = data.parent_title ? '' : 'none';
+    }
+
+    updateTaskButtons();
+
+    document.querySelectorAll('.tree-link.active').forEach(a => a.classList.remove('active'));
+    document.querySelectorAll('.tree-node.row-active').forEach(n => n.classList.remove('row-active'));
+    const link = document.querySelector(`.tree-link[data-note-id="${data.id}"]`);
+    if (link) {
+      link.classList.add('active');
+      const node = link.closest('.tree-node');
+      if (node) node.classList.add('row-active');
+    }
+
+    if (typeof window.renderRecent === 'function') {
+      try { window.renderRecent(); } catch (e) {}
+    }
+  }
+
+  async function __swapNoteInPlace(noteId) {
+    if (_swapInProgress) {
+      _spaLog('swap already in progress, ignoring');
+      return false;
+    }
+
+    noteId = Number(noteId);
+    if (!_isPlainNoteId(noteId)) {
+      _spaLog('not a plain note id, falling back');
+      return false;
+    }
+    if (Number(window.NOTE_ID) === noteId) {
+      _spaLog('already on this note, ignoring');
+      return true;
+    }
+
+    _swapInProgress = true;
+    try {
+      flashIndicator('Loading…', true);
+
+      let data;
+      try {
+        const r = await fetch(`/api/notes/${noteId}`, { cache: 'no-store' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        data = await r.json();
+        if (!data || data.ok === false) throw new Error('bad payload');
+      } catch (e) {
+        _spaLog('fetch note failed', e);
+        flashIndicator('Load failed', false);
+        window.location.href = `/?note=${noteId}`;
+        return false;
+      }
+
+      if (data.is_map_note) {
+        _spaLog('target is a map note, falling back');
+        window.location.href = `/?note=${noteId}`;
+        return false;
+      }
+
+      applyNoteState(data);
+
+      if (editor && typeof editor.setContentSilent === 'function') {
+        editor.setContentSilent(data.content || '');
+      } else if (editor) {
+        editor.setContent(data.content || '');
+      }
+
+      populateKeyList();
+      renderProps();
+      updateDueBtnState();
+      updateReminderBadge();
+
+      invalidateBlocks();
+      try {
+        await fetchBlocks();
+      } catch (e) {
+        _spaLog('block fetch failed', e);
+      }
+
+      if (typeof renderPreview === 'function') {
+        try { renderPreview(); } catch (e) { _spaLog('renderPreview failed', e); }
+      }
+
+      // Update the outline container so it points at the new note.
+      const noteFlow = document.querySelector('.note-flow');
+      if (noteFlow) {
+        let wrap = noteFlow.querySelector('.outline-wrap');
+        const hasChildren = !!data.has_children;
+
+        if (hasChildren && !wrap) {
+          wrap = document.createElement('div');
+          wrap.className = 'outline-wrap' + (window.OUTLINE_VIEW_MODE === 'card' ? ' outline-cards-view' : '');
+          wrap.innerHTML =
+            '<div class="outline-head-bar">' +
+              '<span class="outline-head-label">Children</span>' +
+              '<button type="button" class="icon-btn small" id="toggle-outline-fold" title="Fold / unfold children">' +
+                '<span class="material-symbols-rounded" id="outline-fold-icon">unfold_more</span>' +
+              '</button>' +
+            '</div>' +
+            '<div class="outline" id="outline-container"></div>';
+          noteFlow.appendChild(wrap);
+          if (typeof window.__rebindOutlineFoldBtn === 'function') {
+            window.__rebindOutlineFoldBtn();
+          }
+        } else if (!hasChildren && wrap) {
+          wrap.remove();
+          wrap = null;
+        }
+
+        if (wrap) {
+          wrap.setAttribute('data-lazy-outline', String(noteId));
+          const labelEl = wrap.querySelector('.outline-head-label');
+          if (labelEl && data.child_count !== undefined) {
+            labelEl.textContent = `Children (${data.child_count})`;
+          }
+          const container = wrap.querySelector('#outline-container');
+          if (container) container.innerHTML = '';
+        }
+      }
+
+      if (typeof window.__refreshOutline === 'function') {
+        try { await window.__refreshOutline(); } catch (e) { _spaLog('outline refresh failed', e); }
+      }
+
+      updateNoteChrome(data);
+
+      if (typeof window.__resetLivePoll === 'function') {
+        window.__resetLivePoll();
+      }
+
+      const url = new URL(window.location.href);
+      url.searchParams.set('note', String(noteId));
+      url.searchParams.delete('focus');
+      url.searchParams.delete('nofocus');
+      url.searchParams.delete('block');
+      window.history.replaceState({}, '', url.toString());
+
+      if (window.matchMedia('(max-width: 720px)').matches) {
+        try { window.collapseSidebar?.(); } catch (e) {}
+      }
+
+      flashIndicator('Loaded', true);
+      _spaLog('swapped to', noteId, data.title);
+      return true;
+    } finally {
+      _swapInProgress = false;
+    }
+  }
+
+  window.__swapNoteInPlace = __swapNoteInPlace;
+  window.__applyNoteState  = applyNoteState;  
+
+  function renderProps() {
+    try {
+      propTable.innerHTML = '';
+      const focusAfter = pendingFocus;
+      pendingFocus = null;
+
+      // --- NEW: Force 'status' to always be the last property ---
+      if ('status' in properties) {
+        const statusVal = properties['status'];
+        delete properties['status'];
+        properties['status'] = statusVal;
+      }
+      // -----------------------------------------------------------
+
+      // --- Toggle the standalone Add button visibility ---
+      // Count only the user-visible properties — internal map keys like
+      // map_view / map_pending / hidden_tracks don't count.
+      const hiddenInternal = ['map_pending', 'map_view', 'hidden_tracks'];
+      const visiblePropCount = Object.keys(properties)
+        .filter(k => !hiddenInternal.includes(k.toLowerCase()))
+        .length;
+      const emptyBtn = document.getElementById('add-prop-empty');
+      if (emptyBtn) {
+        emptyBtn.style.display = visiblePropCount === 0 ? 'flex' : 'none';
+      };
+
+      // Remove existing header button before re-rendering
+      const existingHeaderBtn = document.getElementById('header-due-btn');
+      if (existingHeaderBtn) existingHeaderBtn.remove();
+
+      Object.entries(properties).forEach(([k, v]) => {
+        // Internal map-note properties the user shouldn't see or edit
+        const hiddenKeys = ['map_pending', 'map_view', 'hidden_tracks'];
+        if (hiddenKeys.includes(k.toLowerCase())) return;
+
+        const row = document.createElement('div');
+        row.className = 'prop-row';
+        row.dataset.rowKey = k;
+        row.draggable = true;
+        row.dataset.propKey = k;    
+        
+        row.draggable = true;
+        row.dataset.propKey = k;
+
+      const keyWrap = document.createElement('div');
+      keyWrap.className = 'prop-key-wrap';
+
+      const keyInput = document.createElement('input');
+      keyInput.value = isPlaceholderKey(k) ? '' : k;
+      keyInput.placeholder = 'property';
+      keyInput.setAttribute('autocapitalize', 'none');
+      keyInput.setAttribute('autocorrect', 'off');
+      keyInput.setAttribute('spellcheck', 'false');
+      keyInput.setAttribute('enterkeyhint', 'done');
+      keyWrap.appendChild(keyInput);
+      
+        // Allow grabbing from the key input, but prevent dragging while typing
+        keyInput.addEventListener('mousedown', () => { row.draggable = true; });
+        keyInput.addEventListener('focus', () => { row.draggable = false; });
+        keyInput.addEventListener('blur', () => { row.draggable = true; });              
+      
+      keyInput.style.cursor = 'grab';      
+
+      // X to clear the key text — only visible while the input is focused
+      const keyClear = document.createElement('button');
+      keyClear.type = 'button';
+      keyClear.className = 'prop-key-clear';
+      keyClear.title = 'Clear key';
+      keyClear.innerHTML = '<span class="material-symbols-rounded">close</span>';
+      keyClear.style.display = 'none';
+      keyClear.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // prevent input blur
+      });
+      keyClear.addEventListener('click', (e) => {
+        e.preventDefault();
+        keyInput.value = '';
+        keyInput.focus();
+      });
+      keyWrap.appendChild(keyClear);
+
+      // Show X only while the input is focused
+      keyInput.addEventListener('focus', () => {
+        if (keyInput.value.trim()) {
+          keyClear.style.display = '';
+        }
+      });
+      keyInput.addEventListener('blur', () => {
+        keyClear.style.display = 'none';
+      });
+      keyInput.addEventListener('input', () => {
+        keyClear.style.display = keyInput.value.trim() ? '' : 'none';
+      });
+
+      attachAutocomplete(keyInput, () => Object.keys(allPropValues).sort());
+
+        // --- Key Input Logic ---
+      function commitKey() {
+        const nk = keyInput.value.trim().toLowerCase();
+        if (!nk) {
+          delete properties[k];
+          // If the removed property is due/date/time, clear the reminder
+          if (['due', 'date', 'time'].includes(k.toLowerCase())) {
+            clearReminderSilently();
+          }
+          enforceDateTimePairing();
+          renderProps();
+          scheduleSave();
+          return;
+        }
+        if (nk === k) return;
+
+        const oldVal = String(properties[k] || '');
+        const targetVal = String(properties[nk] || '');
+
+        if (nk in properties && !isPlaceholderKey(nk)) {
+          const merged = [];
+          const seen = new Set();
+          for (const piece of (oldVal + ',' + targetVal).split(',')) {
+            const v = piece.trim().toLowerCase();
+            if (v && !seen.has(v)) {
+              seen.add(v);
+              merged.push(v);
+            }
+          }
+          delete properties[k];
+          properties[nk] = merged.join(', ');
+        } else {
+          delete properties[k];
+          properties[nk] = oldVal;
+        }
+        enforceDateTimePairing();
+        pendingFocus = { rowKey: nk, field: 'value' };
+        renderProps();
+        scheduleSave();
+      }
+
+        keyInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.keyCode === 13) {
+            e.preventDefault();
+            commitKey();
+          }
+        });
+
+        keyInput.addEventListener('input', (e) => {
+          if (e.data === '\n' || e.inputType === 'insertLineBreak') {
+            keyInput.value = keyInput.value.replace(/[\r\n]/g, '');
+            commitKey();
+          }
+        });
+
+        keyInput.addEventListener('change', commitKey);
+
+        // --- Value Input Logic ---
+        const valWrap = document.createElement('div');
+        valWrap.className = 'prop-value-wrap prop-chips-wrap';
+
+        const chips = document.createElement('div');
+        chips.className = 'prop-chips';
+        valWrap.appendChild(chips);
+
+        const currentValues = String(v || '').split(',')
+          .map(s => s.trim())
+          .filter(Boolean);
+
+      function commitValues(arr) {
+        const deduped = [];
+        const seen = new Set();
+        for (const raw of arr) {
+          const lower = String(raw).trim().toLowerCase();
+          if (lower && !seen.has(lower)) {
+            seen.add(lower);
+            deduped.push(lower);
+          }
+        }
+        const lowerK = k.toLowerCase();
+        if (deduped.length === 0) {
+          delete properties[k];
+          if (['due', 'date', 'time'].includes(lowerK)) {
+            clearReminderSilently();
+          }
+        } else {
+          properties[k] = deduped.join(', ');
+        }
+        // Enforce due → time pairing
+        enforceDateTimePairing();
+        scheduleSave();
+      }
+
+        function renderChips() {
+          chips.innerHTML = '';
+          const values = String(properties[k] || '').split(',')
+            .map(s => s.trim())
+            .filter(Boolean);
+          values.forEach(val => {
+            const chip = document.createElement('span');
+            chip.className = 'prop-chip';
+            const label = document.createElement('span');
+            label.className = 'prop-chip-label';
+            label.textContent = val;
+            const rm = document.createElement('button');
+            rm.type = 'button';
+            rm.className = 'prop-chip-remove';
+            rm.innerHTML = '<span class="material-symbols-rounded">close</span>';
+            rm.addEventListener('click', (e) => {
+              e.preventDefault();
+              const remaining = values.filter(x => x !== val);
+              commitValues(remaining);
+              renderChips();
+            });
+            chip.appendChild(label);
+            chip.appendChild(rm);
+            chips.appendChild(chip);
+          });
+        }
+
+        const lk = k.toLowerCase();
+        // Single-value keys: hide text input and prevent adding multiple values
+        const isSingleValue = ['due', 'date', 'created', 'reminder', 'time'].includes(lk);
+
+        const inputEl = document.createElement('input');
+        inputEl.className = 'prop-chip-input';
+        inputEl.placeholder = currentValues.length ? '' : 'add…';
+        inputEl.setAttribute('autocapitalize', 'none');
+        inputEl.setAttribute('autocorrect', 'off');
+        inputEl.setAttribute('spellcheck', 'false');
+        inputEl.setAttribute('enterkeyhint', 'done');
+        
+        // ADD THESE LINES:
+        inputEl.style.height = '22px';
+        inputEl.style.padding = '0';
+        inputEl.style.border = '0';
+        inputEl.style.background = 'transparent';
+
+        if (isSingleValue) {
+          inputEl.style.display = 'none'; // Hide the text box entirely
+          valWrap.classList.add('single-value'); // Add a class for CSS
+        }
+
+        valWrap.appendChild(inputEl);
+        
+        // Make tapping anywhere in the box focus the input
+        valWrap.addEventListener('click', (e) => {
+          if (e.target === valWrap || e.target === chips) {
+            inputEl.focus();
+          }
+        });        
+
+        function commitAndClear() {
+          const raw = inputEl.value.trim();
+          if (!raw) return false;
+          const existing = String(properties[k] || '').split(',')
+            .map(s => s.trim())
+            .filter(Boolean);
+          existing.push(raw);
+          commitValues(existing);
+          inputEl.value = '';
+          renderChips();
+          inputEl.blur(); // <--- ADD THIS LINE
+          return true;
+        }
+
+        function moveToNext() {
+          const rows = [...propTable.querySelectorAll('.prop-row')];
+          const idx = rows.indexOf(row);
+          const next = rows[idx + 1];
+          if (next) {
+            const nextKey = next.querySelector('input');
+            if (nextKey) nextKey.focus();
+          } else {
+            focusEditorSafely();
+          }
+        }
+
+        attachAutocomplete(inputEl, () => {
+          const currentKey = keyInput.value.trim().toLowerCase();
+          const existing = String(properties[k] || '').split(',')
+            .map(s => s.trim())
+            .filter(Boolean);
+          const suggestions = splitValues(allPropValues[currentKey] || []);
+          return suggestions.filter(s => !existing.includes(s));
+        }, () => commitAndClear());
+
+        inputEl.addEventListener('keydown', (e) => {
+          if (isSingleValue) return; // Block typing in single-value keys
+          if (e.key === 'Enter' || e.keyCode === 13 || e.key === ',' || e.key === 'Tab') {
+            if (e.key === 'Tab' && !inputEl.value.trim()) {
+              return;
+            }
+            e.preventDefault();
+            if (inputEl.value.trim()) {
+              commitAndClear();
+              if (e.key === 'Tab') moveFocusForward(inputEl);
+            } else {
+              moveToNext();
+            }
+          }
+        });
+
+        inputEl.addEventListener('input', (e) => {
+          if (isSingleValue) return;
+          if (e.data === '\n' || e.inputType === 'insertLineBreak') {
+            inputEl.value = inputEl.value.replace(/[\r\n]/g, '');
+            if (inputEl.value.trim()) {
+              commitAndClear();
+            } else {
+              moveToNext();
+            }
+          }
+        });
+
+        inputEl.addEventListener('blur', () => {
+          if (isSingleValue) return;
+          if (inputEl.value.trim()) {
+            commitAndClear();
+          }
+        });
+
+        renderChips();
+        row._renderChips = renderChips; // Expose for the date/time picker
+
+        // --- Attachments / Pickers ---
+        if (lk === 'latitude') {
+          // Show the map button next to the latitude property
+          const mapBtn = document.createElement('button');
+          mapBtn.className = 'prop-map';
+          mapBtn.title = 'Open in map';
+          mapBtn.type = 'button';
+          mapBtn.innerHTML = '<span class="material-symbols-rounded">map</span>';
+          mapBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            // Get the current latitude and longitude from properties
+            const currentLat = String(properties['latitude'] || '').trim();
+            const currentLng = String(properties['longitude'] || '').trim();
+            
+            if (currentLat && currentLng) {
+              const coords = `${currentLat},${currentLng}`;
+              const isMobile = window.matchMedia('(max-width: 720px)').matches;
+              const url = isMobile
+                ? `geo:${coords}?q=${coords}`
+                : `https://www.google.com/maps?q=${coords}`;
+              window.open(url, '_blank');
+            } else {
+              alert('Both latitude and longitude are required to open the map.');
+            }
+          });
+          valWrap.appendChild(mapBtn);
+          inputEl.classList.add('has-map');
+        } else if (lk === 'due' || lk === 'date' || lk === 'created' || lk === 'reminder') {
+          valWrap.appendChild(makeDateTimePicker('date', inputEl, k));
+          inputEl.classList.add('has-map');
+        } else if (lk === 'time') {
+          valWrap.appendChild(makeDateTimePicker('time', inputEl, k));
+          inputEl.classList.add('has-map');
+        } else if (lk === 'file' || lk === 'path' || lk === 'link') {
+          const isPath = String(v).trim().startsWith('/');
+          if (isPath) {
+            const fileBtn = document.createElement('button');
+            fileBtn.className = 'prop-map';
+            fileBtn.title = 'Open file with default app';
+            fileBtn.type = 'button';
+            fileBtn.innerHTML = '<span class="material-symbols-rounded">draft</span>';
+            
+            fileBtn.addEventListener('click', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const filePath = String(v).trim();
+              const url = `/local-file?path=${encodeURIComponent(filePath)}`;
+              window.open(url, '_blank');
+            });
+            
+            valWrap.appendChild(fileBtn);
+            inputEl.classList.add('has-map');
+          }
+        }
+
+      const del = document.createElement('button');
+      del.className = 'prop-del';
+      del.title = 'Remove property';
+      del.innerHTML = '<span class="material-symbols-rounded">close</span>';
+      del.addEventListener('click', () => {
+        const lowerK = k.toLowerCase();
+        delete properties[k];
+        // If the removed property is due/time/date, clear the reminder
+        if (['due', 'date', 'time'].includes(lowerK)) {
+          clearReminderSilently();
+        }
+        // Enforce due → time pairing
+        enforceDateTimePairing();
+        renderProps();
+        scheduleSave();
+      });
+
+      row.appendChild(keyWrap);
+      row.appendChild(valWrap);
+      
+      // --- NEW: Add Property Button (+) logic ---
+      const keys = Object.keys(properties);
+      const isLastRow = (k === keys[keys.length - 1]);
+
+      if (isLastRow) {
+        // If this is the last property, show the + button
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'prop-add';
+        addBtn.title = 'Add another property';
+        addBtn.innerHTML = '<span class="material-symbols-rounded">add</span>';
+        addBtn.addEventListener('click', () => {
+          const newK = newPlaceholderKey();
+          properties[newK] = '';
+          pendingFocus = { rowKey: newK, field: 'key' };
+          renderProps();
+        });
+        row.appendChild(addBtn);
+      } else {
+        // If not the last property, add an invisible spacer to keep the delete buttons aligned
+        const spacer = document.createElement('div');
+        spacer.className = 'prop-add-spacer';
+        row.appendChild(spacer);
+      }
+
+      row.appendChild(del);
+      propTable.appendChild(row);
+      
+        // --- Drag and Drop Logic ---
+        row.addEventListener('dragstart', (e) => {
+          // Only allow dragging if we grabbed the key input
+          if (document.activeElement === keyInput) return; 
+          
+          e.dataTransfer.setData('text/plain', k);
+          e.dataTransfer.effectAllowed = 'move';
+          row.style.opacity = '0.5';
+        });
+
+        row.addEventListener('dragend', () => {
+          row.style.opacity = '1';
+        });
+
+        row.addEventListener('dragover', (e) => {
+          e.preventDefault(); // Required to allow dropping
+          e.dataTransfer.dropEffect = 'move';
+        });
+
+        row.addEventListener('dragleave', () => {
+          // No visual indicators to clear
+        });
+
+        row.addEventListener('drop', (e) => {
+          e.preventDefault();
+
+          const draggedKey = e.dataTransfer.getData('text/plain');
+          const targetKey = k;
+
+          if (draggedKey === targetKey) return;
+
+          // Rebuild the properties object in the new order
+          const newProps = {};
+          const keys = Object.keys(properties);
+          
+          const bounding = row.getBoundingClientRect();
+          const dropAfter = (e.clientY - bounding.top) > (bounding.height / 2);
+
+          // Remove the dragged item from the list
+          keys.splice(keys.indexOf(draggedKey), 1);
+
+          // Insert it before or after the target
+          const targetIndex = keys.indexOf(targetKey);
+          keys.splice(dropAfter ? targetIndex + 1 : targetIndex, 0, draggedKey);
+
+          // Apply the new order
+          keys.forEach(key => {
+            newProps[key] = properties[key];
+          });
+
+          // Update the global object and trigger a save
+          properties = newProps;
+          renderProps();
+          scheduleSave();
+        }); 
+    });
+
+      // --- Add the Header Reminder Button if needed ---
+      const hasDueProp = Object.keys(properties).some(k => 
+        ['due', 'date', 'reminder'].includes(k.toLowerCase())
+      );
+
+      if (hasDueProp) {
+        const headerBtn = document.createElement('button');
+        headerBtn.type = 'button';
+        headerBtn.className = 'icon-btn header-reminder-btn';
+        headerBtn.id = 'header-due-btn';
+        headerBtn.title = 'Set / clear reminder';
+        
+        const hasReminder = !!dueEl.value;
+        headerBtn.innerHTML = `<span class="material-symbols-rounded">${hasReminder ? 'alarm_on' : 'alarm_add'}</span>`;
+        if (hasReminder) headerBtn.classList.add('has-due');
+        
+        headerBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          const globalDueBtn = document.getElementById('due-btn');
+          if (globalDueBtn) globalDueBtn.click();
+        });
+        
+        document.querySelector('.title-wrap').appendChild(headerBtn);
+      }
+
+      if (focusAfter) {
+        requestAnimationFrame(() => {
+          const targetRow = propTable.querySelector(`.prop-row[data-row-key="${focusAfter.rowKey}"]`);
+          if (targetRow) {
+            const el = focusAfter.field === 'key'
+              ? targetRow.querySelector('input')
+              : targetRow.querySelector('.prop-chip-input');
+            if (el) {
+              el.focus();
+              const len = (el.value || '').length;
+              if (typeof el.setSelectionRange === 'function') {
+                try { el.setSelectionRange(len, len); } catch (e) {}
+              }
+            }
+          }
+        });
+      }
+    } catch (err) {
+      alert('renderProps error: ' + err.message);
+      console.error(err);
+    }
+  }
+  try {
+    populateKeyList();
+    renderProps();
+    updateTaskButtons();    
+    
+    // Ensure the reminder button state is applied AFTER the props are in the DOM
+    requestAnimationFrame(() => {
+      updateDueBtnState();
+      updateReminderBadge();
+    });
+  } catch (err) {
+    alert('Init error (populateKeyList/renderProps): ' + err.message);
+    console.error(err);
+  }
+  
+  const addPropEmptyBtn = $('#add-prop-empty');
+  if (addPropEmptyBtn) {
+    addPropEmptyBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const k = newPlaceholderKey();
+      properties[k] = '';
+      pendingFocus = { rowKey: k, field: 'key' };
+      renderProps();
+    });
+  }  
+
+  $('#add-location').addEventListener('click', () => {
+    if (!navigator.geolocation) { alert('Geolocation not supported'); return; }
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        const { latitude, longitude } = pos.coords;
+        
+        // Remove the old 'location' property if it exists
+        for (const k of Object.keys(properties)) {
+          if (k.toLowerCase() === 'location') {
+            delete properties[k];
+          }
+        }
+        
+        // Set the new standard latitude/longitude properties
+        properties['latitude'] = latitude.toFixed(6);
+        properties['longitude'] = longitude.toFixed(6);
+        
+        renderProps();
+        scheduleSave();
+      },
+      err => alert('Location error: ' + err.message),
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  });
+
+  const toggleTemplateBtn = $('#toggle-template');
+  if (toggleTemplateBtn) {
+    toggleTemplateBtn.addEventListener('click', async () => {
+      const r = await fetch(`/note/${window.NOTE_ID}/toggle-template`, {
+        method: 'POST',
+      });
+      if (r.ok) {
+        const data = await r.json();
+        const icon = toggleTemplateBtn.querySelector('.material-symbols-rounded');
+        const actionBar = $('#action-bar'); // Get the bottom action bar
+        
+        if (data.is_template) {
+          toggleTemplateBtn.classList.add('primary');
+          icon.textContent = 'bookmark_remove';
+          toggleTemplateBtn.title = 'Unmark as template';
+          flashIndicator('Marked as template', true);
+          
+          // Inject the "Blank Title" button right after the template button
+          if (!$('#toggle-blank-title')) {
+            const blankBtn = document.createElement('button');
+            blankBtn.className = 'icon-btn';
+            blankBtn.id = 'toggle-blank-title';
+            blankBtn.title = 'Use template title on use';
+            blankBtn.innerHTML = '<span class="material-symbols-rounded">format_color_text</span>';
+            
+            // Add the click listener for the new button
+            blankBtn.addEventListener('click', async () => {
+              const r2 = await fetch(`/note/${window.NOTE_ID}/toggle-blank-title`, { method: 'POST' });
+              if (r2.ok) {
+                const data2 = await r2.json();
+                if (data2.blank_title_on_use) {
+                  blankBtn.classList.add('primary', 'disabled-title');
+                  blankBtn.title = 'Blank title on use';
+                  flashIndicator('Blank title on use', true);
+                } else {
+                  blankBtn.classList.remove('primary', 'disabled-title');
+                  blankBtn.title = 'Use template title on use';
+                  flashIndicator('Title used on use', true);
+                }
+              }
+            });
+            
+            // Insert it right after the template button in the DOM
+            toggleTemplateBtn.after(blankBtn);
+          }
+          
+        } else {
+          toggleTemplateBtn.classList.remove('primary');
+          icon.textContent = 'bookmark';
+          toggleTemplateBtn.title = 'Mark as template';
+          flashIndicator('Unmarked as template', true);
+          
+          // Remove the blank title button since it's no longer a template
+          const blankBtn = $('#toggle-blank-title');
+          if (blankBtn) blankBtn.remove();
+        }
+        
+        // Refresh the tree to swap the file icon for a bookmark icon
+        if (typeof window.__refreshTree === 'function') {
+          await window.__refreshTree();
+          
+          // If we just marked it as a template, find the Templates folder and expand it
+          if (data.is_template) {
+            const templatesLink = [...document.querySelectorAll('.tree-label')].find(el => el.textContent === 'Templates');
+            if (templatesLink) {
+              const node = templatesLink.closest('.tree-node');
+              if (node) {
+                node.classList.add('expanded');
+                const folderId = node.dataset.noteId;
+                if (folderId && typeof window.__refreshTree === 'function') {
+                  // Refresh the specific folder's children so the note appears
+                  await window.__refreshTree(folderId);
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+  
+  const toggleBlankTitleBtn = $('#toggle-blank-title');
+  if (toggleBlankTitleBtn) {
+    toggleBlankTitleBtn.addEventListener('click', async () => {
+      const r = await fetch(`/note/${window.NOTE_ID}/toggle-blank-title`, {
+        method: 'POST',
+      });
+      if (r.ok) {
+        const data = await r.json();
+        if (data.blank_title_on_use) {
+          toggleBlankTitleBtn.classList.add('primary', 'disabled-title');
+          toggleBlankTitleBtn.title = 'Blank title on use';
+          flashIndicator('Blank title on use', true);
+        } else {
+          toggleBlankTitleBtn.classList.remove('primary', 'disabled-title');
+          toggleBlankTitleBtn.title = 'Use template title on use';
+          flashIndicator('Title used on use', true);
+        }
+      }
+    });
+  }  
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+  
+  function highlightSearchTerms(rootEl, query) {
+    if (!window.CSS || !CSS.highlights) return;
+
+    // Always clear previous highlights first
+    CSS.highlights.delete('search-results');
+
+    // If there's no new query, we're done (just cleared)
+    if (!query) return;
+
+    const ranges = [];
+    const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, null, false);
+    let node;
+    const lowerQuery = query.toLowerCase();
+
+    // 3. Walk through all text nodes in the preview
+    while ((node = walker.nextNode())) {
+      const text = node.textContent;
+      const lowerText = text.toLowerCase();
+      let index = lowerText.indexOf(lowerQuery);
+
+      while (index !== -1) {
+        const range = new Range();
+        range.setStart(node, index);
+        range.setEnd(node, index + query.length);
+        ranges.push(range);
+        index = lowerText.indexOf(lowerQuery, index + 1);
+      }
+    }
+
+    // 4. Register the highlight if we found matches
+    if (ranges.length > 0) {
+      const highlight = new Highlight(...ranges);
+      CSS.highlights.set('search-results', highlight);
+    }
+  }  
+  
+  function getDragAfterElement(container, y) {
+    const draggableElements = [
+      ...container.querySelectorAll(':scope > li:not(.dragging)')
+    ];
+    return draggableElements.reduce((closest, child) => {
+      const box = child.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > closest.offset) {
+        return { offset, element: child };
+      }
+      return closest;
+    }, { offset: -Infinity, element: null }).element;
+  }
+
+  function savePreviewListOrder(ul, listIndex) {
+    if (!editor) return;
+
+    const domLis = [...ul.querySelectorAll(':scope > li')];
+    const orderedSrcLines = [];
+    for (const li of domLis) {
+      const raw = li.getAttribute('data-src-line');
+      if (raw == null) return;
+      const n = parseInt(raw, 10);
+      if (!Number.isFinite(n)) return;
+      orderedSrcLines.push(n);
+    }
+    if (!orderedSrcLines.length) return;
+
+    const content = editor.getContent();
+    const lines = content.split('\n');
+    const allItems = window.scanListItemsByOrdinal(content);
+
+    const lists = [];
+    for (const it of allItems) {
+      const last = lists[lists.length - 1];
+      if (last && it.startLine <= last[last.length - 1].endLine) {
+        last.push(it);
+      } else if (last && it.startLine === last[last.length - 1].endLine + 1) {
+        last.push(it);
+      } else {
+        lists.push([it]);
+      }
+    }
+
+    const targetList = lists[listIndex];
+    if (!targetList) return;
+
+    const srcIndexToBlock = new Map();
+    for (const it of targetList) {
+      srcIndexToBlock.set(it.startLine, lines.slice(it.startLine, it.endLine + 1));
+    }
+
+    for (const n of orderedSrcLines) {
+      if (!srcIndexToBlock.has(n)) return;
+    }
+
+    let ascending = true;
+    for (let i = 1; i < orderedSrcLines.length; i++) {
+      if (orderedSrcLines[i] < orderedSrcLines[i - 1]) { ascending = false; break; }
+    }
+    if (ascending) return;
+
+    const rebuiltBlocks = orderedSrcLines.map(n => srcIndexToBlock.get(n));
+    const listStart = targetList[0].startLine;
+    const listEnd = targetList[targetList.length - 1].endLine;
+
+    const before = lines.slice(0, listStart);
+    const after = lines.slice(listEnd + 1);
+    const newContent = [...before, ...rebuiltBlocks.flat(), ...after].join('\n');
+
+    editor.setContent(newContent);
+
+    // Update the affected block's text in the cache so the immediate
+    // renderPreview() shows the reorder without waiting for the next
+    // server round-trip.
+    try {
+      const cached = window.__blockCache[window.NOTE_ID];
+      if (Array.isArray(cached)) {
+        const oldBlockText = content.split('\n').slice(listStart, listEnd + 1).join('\n').trim();
+        const newBlockText = newContent.split('\n').slice(listStart, listEnd + 1).join('\n').trim();
+        for (const b of cached) {
+          const bt = (b.text || '').trim();
+          if (bt === oldBlockText) {
+            b.text = newBlockText;
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('block cache local update failed', e);
+    }
+
+    renderPreview();
+
+    if (typeof window.__forceSave === 'function') {
+      window.__forceSave(newContent);
+    }
+  }
+  
+  function wirePreviewDragDrop() {
+    const lists = previewEl.querySelectorAll('ul');
+    let listIndex = 0;
+
+    lists.forEach(ul => {
+      const hasCheckbox = ul.querySelector('input[type="checkbox"]');
+      const currentListIndex = listIndex++;
+
+      // Only attach drag handles to lists that contain at least one
+      // task item — plain lists don't need handles.
+      if (!hasCheckbox) return;
+
+      if (ul.dataset.dndWired === '1') return;
+      ul.dataset.dndWired = '1';
+
+      ul.querySelectorAll(':scope > li').forEach(li => {
+        if (li.dataset.dndWired === '1') return;
+        li.dataset.dndWired = '1';
+
+        const handle = document.createElement('span');
+        handle.className = 'task-drag-handle';
+        handle.textContent = '≡';
+
+        const cb = li.querySelector('input[type="checkbox"]');
+        if (cb) {
+          cb.after(handle);
+        } else {
+          li.insertBefore(handle, li.firstChild);
+        }
+
+        let dragging = false;
+
+        handle.addEventListener('pointerdown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dragging = true;
+          li.classList.add('dragging');
+
+          const onMove = (ev) => {
+            if (!dragging) return;
+            const after = getDragAfterElement(ul, ev.clientY);
+            if (after == null) {
+              ul.appendChild(li);
+            } else if (after !== li) {
+              ul.insertBefore(li, after);
+            }
+          };
+          const onUp = (ev) => {
+            if (!dragging) return;
+            dragging = false;
+            li.classList.remove('dragging');
+            document.removeEventListener('pointermove', onMove);
+            document.removeEventListener('pointerup', onUp);
+            document.removeEventListener('pointercancel', onUp);
+
+            // savePreviewListOrder() already writes the new content and
+            // calls window.__forceSave() internally — a single save is
+            // enough. The extra doSave() here raced that save and caused
+            // the server to return 409 → page reload.
+            savePreviewListOrder(ul, currentListIndex);
+          };
+
+          document.addEventListener('pointermove', onMove);
+          document.addEventListener('pointerup', onUp);
+          document.addEventListener('pointercancel', onUp);
+        });
+      });
+    });
+  } 
+  
+  // ============================================================
+  // Block cards — preview rendering with per-block menu
+  // ============================================================
+  // Blocks are top-level markdown chunks (split on blank lines).
+  // Each rendered block becomes a .block-card in the preview. Only
+  // blocks that carry metadata (a block_meta row) get a menu button;
+  // plain blocks are still cards but visually identical to plain text.
+  //
+  // The cache is fetched once per note (on mount, on save, on tab
+  // switch). renderPreview() renders from the cache and refreshes
+  // in the background, so previews update instantly.
+  window.__blockCache = window.__blockCache || {};
+  window.__blockCache[window.NOTE_ID] = null;
+
+  // Session cache for autocomplete block search: title (lowercased) → blocks.
+  // Reused across @-invocations so the picker doesn't wait for a round-trip
+  // every time. Cleared by invalidateBlocks() on save.
+  const _blockCacheByTitle = new Map();
+
+  let _blockFetchDebounce = null;
+
+  function getCachedBlocks() {
+    const cached = window.__blockCache[window.NOTE_ID];
+    return Array.isArray(cached) ? cached : null;
+  }
+
+  function invalidateBlocks() {
+    window.__blockCache[window.NOTE_ID] = null;
+    try { _blockCacheByTitle.clear(); } catch (e) {}
+  }
+
+  async function fetchBlocks() {
+    try {
+      const r = await fetch(`/api/note/${window.NOTE_ID}/blocks`, { cache: 'no-store' });
+      if (!r.ok) return null;
+      const data = await r.json();
+      if (data && data.ok && Array.isArray(data.blocks)) {
+        window.__blockCache[window.NOTE_ID] = data.blocks;
+        return data.blocks;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function scheduleBlockFetch() {
+    clearTimeout(_blockFetchDebounce);
+    _blockFetchDebounce = setTimeout(async () => {
+      const previous = getCachedBlocks();
+      const fetched = await fetchBlocks();
+      // Compare by text content only, not by generated ID — unmarshaled
+      // blocks get random IDs on every fetch, so ID-based comparison
+      // always sees a "change" and causes infinite render loops.
+      const prevText = (previous || []).map(b => b.text).join('\u0001');
+      const newText = (fetched || []).map(b => b.text).join('\u0001');
+      const changed = prevText !== newText;
+      if (changed && editor && bodyEl && bodyEl.classList.contains('split')) {
+        renderPreview();
+      }
+    }, 600);
+  }
+
+  function renderBlockCards(blocks) {
+    const parts = [];
+
+    // Compute each block's GLOBAL starting line in the note source,
+    // so the per-block mdToHtml() calls can tag <li> elements with
+    // global line numbers. This is what makes drag-reorder work
+    // (savePreviewListOrder compares data-src-line against the
+    // whole-note scanListItemsByOrdinal result).
+    let fullContent = '';
+    if (editor && typeof editor.getContent === 'function') {
+      fullContent = editor.getContent() || '';
+    }
+    let searchPos = 0;
+    let runningLine = 0;
+    let runningChar = 0;
+
+    // Helper: how many newlines from position 0 up to `charPos`?
+    function lineAt(charPos) {
+      let n = 0;
+      for (let i = 0; i < charPos && i < fullContent.length; i++) {
+        if (fullContent[i] === '\n') n++;
+      }
+      return n;
+    }
+
+    for (const b of blocks) {
+      if (!b || typeof b.text !== 'string') continue;
+      if (!b.text.trim()) continue;
+
+      // Try to find this block in the full source starting from searchPos.
+      // Server-side split_blocks trims trailing whitespace per line, so we
+      // search for the FIRST line of the block (which is the least
+      // modified by trimming).
+      const firstLine = b.text.split('\n')[0];
+      let blockStartChar = -1;
+      if (firstLine) {
+        const found = fullContent.indexOf(firstLine, searchPos);
+        if (found >= 0) blockStartChar = found;
+      }
+
+      let lineOffset;
+      if (blockStartChar >= 0) {
+        lineOffset = lineAt(blockStartChar);
+        searchPos = blockStartChar + b.text.length;
+      } else {
+        // Fallback: use the running counter. May be slightly off if
+        // the block was heavily edited between fetches, but at least
+        // it doesn't misalign everything after.
+        lineOffset = runningLine;
+        searchPos = runningChar;
+        runningChar += b.text.length + 2; // +2 for the blank-line separator
+      }
+
+      runningLine = lineOffset + (b.text.split('\n').length);
+
+      const cardClasses = ['block-card'];
+      if (b.has_meta) cardClasses.push('block-card-has-meta');
+
+      let reminderBadge = '';
+      if (b.due_at) {
+        const d = new Date(b.due_at);
+        const label = d.toLocaleString([], {
+          month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit',
+        });
+        reminderBadge =
+          `<span class="block-reminder-badge" title="Reminder set">` +
+          `<span class="material-symbols-rounded">alarm</span>${escapeHtml(label)}` +
+          `</span>`;
+      }
+
+      const menuBtn =
+        `<button type="button" class="block-menu-btn" ` +
+        `data-block-id="${escapeHtml(b.id)}" title="Block menu">` +
+        `<span class="material-symbols-rounded">more_vert</span>` +
+        `</button>`;
+
+      const body = mdToHtml(b.text, lineOffset);
+
+      parts.push(
+        `<div class="${cardClasses.join(' ')}" data-block-id="${escapeHtml(b.id)}">` +
+        menuBtn +
+        reminderBadge +
+        `<div class="block-card-body">${body}</div>` +
+        `</div>`
+      );
+    }
+    return parts.join('');
+  }
+
+  let _blockMenuEl = null;
+  let _blockMenuAnchor = null;
+
+  function closeBlockMenu() {
+    if (_blockMenuEl) {
+      _blockMenuEl.remove();
+      _blockMenuEl = null;
+    }
+    _blockMenuAnchor = null;
+  }
+
+  async function openBlockMenu(btn) {
+    if (_blockMenuEl && _blockMenuAnchor === btn) {
+      closeBlockMenu();
+      return;
+    }
+    closeBlockMenu();
+
+    const blockId = btn.dataset.blockId;
+    if (!blockId) return;
+
+    let blocks = getCachedBlocks();
+    if (!blocks) {
+      // Cache not ready — fetch it now, then continue.
+      blocks = await fetchBlocks();
+      if (!blocks) return;
+    }
+    const block = blocks.find(b => b.id === blockId);
+    if (!block) return;
+
+    _blockMenuAnchor = btn;
+    _blockMenuEl = document.createElement('div');
+    _blockMenuEl.className = 'block-menu-popover';
+    _blockMenuEl.innerHTML =
+      `<div class="fsp-item" data-block-action="zoom">` +
+      `<span class="material-symbols-rounded">open_in_full</span>` +
+      `<span>Edit</span>` +
+      `</div>` +
+      `<div class="fsp-item" data-block-action="copy">` +
+      `<span class="material-symbols-rounded">content_copy</span>` +
+      `<span>Copy</span>` +
+      `</div>` +
+      `<div class="fsp-item" data-block-action="move">` +
+      `<span class="material-symbols-rounded">drive_file_move</span>` +
+      `<span>Move to note…</span>` +
+      `</div>` +
+      `<div class="fsp-sep"></div>` +
+      `<div class="fsp-item" data-block-action="remind">` +
+      `<span class="material-symbols-rounded">alarm_add</span>` +
+      `<span>${block.due_at ? 'Edit reminder' : 'Set reminder'}</span>` +
+      `</div>` +
+      (block.due_at ? (
+        `<div class="fsp-item" data-block-action="clear-remind">` +
+        `<span class="material-symbols-rounded">alarm_off</span>` +
+        `<span>Clear reminder</span>` +
+        `</div>`
+      ) : '') +
+      `<div class="fsp-sep"></div>` +
+      `<div class="fsp-item fsp-item-danger" data-block-action="delete">` +
+      `<span class="material-symbols-rounded">delete</span>` +
+      `<span>Delete</span>` +
+      `</div>`;
+    document.body.appendChild(_blockMenuEl);
+
+    // Position near the button
+    const r = btn.getBoundingClientRect();
+    const w = _blockMenuEl.offsetWidth || 180;
+    const h = _blockMenuEl.offsetHeight || 200;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let left = r.right - w;
+    let top = r.bottom + 4;
+    if (left < 8) left = 8;
+    if (left + w > vw - 8) left = vw - w - 8;
+    if (top + h > vh - 8) top = Math.max(8, r.top - h - 4);
+    _blockMenuEl.style.left = left + 'px';
+    _blockMenuEl.style.top = top + 'px';
+
+    _blockMenuEl.querySelectorAll('[data-block-action]').forEach(item => {
+      item.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const action = item.dataset.blockAction;
+        closeBlockMenu();
+        if (action === 'remind') openBlockReminderPicker(block);
+        else if (action === 'clear-remind') clearBlockReminder(block);
+        else if (action === 'copy') copyBlockText(block);
+        else if (action === 'delete') deleteBlock(block);
+        else if (action === 'move') openBlockMovePicker(block);
+        else if (action === 'zoom') openBlockZoomEditor(block);
+      });
+    });
+
+    // Dismiss on outside click
+    setTimeout(() => {
+      const onDoc = (e) => {
+        if (!_blockMenuEl) return;
+        if (_blockMenuEl.contains(e.target)) return;
+        if (btn.contains(e.target)) return;
+        closeBlockMenu();
+        window.__blockMenuDismissedAt = Date.now();
+        document.removeEventListener('mousedown', onDoc, true);
+        document.removeEventListener('touchstart', onDoc, true);
+      };
+      document.addEventListener('mousedown', onDoc, true);
+      document.addEventListener('touchstart', onDoc, true);
+    }, 0);
+  }
+
+  async function copyBlockText(block) {
+    try {
+      await navigator.clipboard.writeText(block.text || '');
+      if (typeof window.showToast === 'function') {
+        window.showToast('Block copied');
+      } else {
+        flashIndicator('Block copied', true);
+      }
+    } catch (e) {
+      if (typeof window.showToast === 'function') {
+        window.showToast('Copy failed: ' + e.message);
+      }
+    }
+  }
+
+  function openBlockReminderPicker(block) {
+    // Build a small overlay with date + time inputs. Pre-populate from
+    // the block's existing due_at (if any). On submit, PATCH the block
+    // meta via /note/<id>/save with a block_meta_updates payload.
+    const currentDue = block.due_at ? new Date(block.due_at) : null;
+    const now = currentDue || new Date(Date.now() + 60 * 60 * 1000); // 1h ahead
+    const pad = n => String(n).padStart(2, '0');
+    const dateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+    const timeStr = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'map-naming-modal'; // reuse existing overlay style
+    overlay.innerHTML = `
+      <div class="map-naming-backdrop"></div>
+      <div class="map-naming-sheet">
+        <h3>Remind me about this block</h3>
+        <input type="date" class="map-naming-input" id="block-rem-date" value="${dateStr}">
+        <input type="time" class="map-naming-input" id="block-rem-time" value="${timeStr}">
+        <div class="map-naming-actions">
+          <button type="button" class="btn map-naming-cancel">Cancel</button>
+          <button type="button" class="btn primary map-naming-ok">Set</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const dateEl = overlay.querySelector('#block-rem-date');
+    const timeEl = overlay.querySelector('#block-rem-time');
+    const close = () => overlay.remove();
+
+    overlay.querySelector('.map-naming-backdrop').addEventListener('click', close);
+    overlay.querySelector('.map-naming-cancel').addEventListener('click', close);
+    overlay.querySelector('.map-naming-ok').addEventListener('click', async () => {
+      if (!dateEl.value || !timeEl.value) return;
+      const iso = new Date(`${dateEl.value}T${timeEl.value}`).toISOString();
+      close();
+      await saveBlockReminder(block, iso);
+    });
+  }
+
+  async function saveBlockReminder(block, iso) {
+    if (!editor) return;
+    try {
+      const payload = {
+        title: titleEl.value,
+        content: editor.getContent(),
+        properties: { ...properties },   // ← live object, not window.NOTE_PROPS
+        due_at: localInputToUtc(dueEl.value),
+        link_ids: [],
+        _client_updated_at: window.NOTE_UPDATED_AT || '',
+        _client_id: CLIENT_ID,
+        block_reminder: {
+          text: block.text,
+          due_at: iso,   // null for clear
+        },
+      };
+
+      const r = await fetch(`/note/${window.NOTE_ID}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        flashIndicator('Save failed', false);
+        return;
+      }
+      const data = await r.json();
+
+      // The server returns HTTP 200 even when the reminder splice fails
+      // (so the client's other bookkeeping — updated_at, properties_changed,
+      // etc. — still applies). But `ok: false` + `block_reminder_failed: true`
+      // means the reminder was NOT attached. Surface the server's message.
+      if (data.ok === false && data.block_reminder_failed) {
+        flashIndicator(data.error || 'Reminder failed', false);
+        return;
+      }
+
+      if (data.updated_at) window.NOTE_UPDATED_AT = data.updated_at;
+
+      // Re-fetch content — marker was spliced in
+      const fresh = await fetch(`/api/notes/${window.NOTE_ID}`);
+      if (fresh.ok) {
+        const freshData = await fresh.json();
+        if (typeof editor.setContent === 'function' && freshData.content !== undefined) {
+          editor.setContent(freshData.content);
+        }
+      }
+      await fetchBlocks();
+      renderPreview();
+      flashIndicator(iso ? 'Reminder set' : 'Reminder cleared', true);
+    } catch (e) {
+      flashIndicator('Error: ' + e.message, false);
+    }
+  }
+
+  async function clearBlockReminder(block) {
+    await saveBlockReminder(block, null);
+  }
+  
+  async function deleteBlock(block) {
+    if (!editor) return;
+    const preview = (block.text || '').slice(0, 60);
+    const label = preview + (block.text && block.text.length > 60 ? '…' : '');
+    if (!confirm(`Delete this block?\n\n"${label}"`)) return;
+
+    try {
+      const payload = {
+        title: titleEl.value,
+        content: editor.getContent(),
+        properties: { ...properties },   // ← live object, not window.NOTE_PROPS
+        due_at: localInputToUtc(dueEl.value),
+        link_ids: [],
+        _client_updated_at: window.NOTE_UPDATED_AT || '',
+        _client_id: CLIENT_ID,
+        block_delete: {
+          text: block.text,
+          block_id: block.id,
+        },
+      };
+
+      const r = await fetch(`/note/${window.NOTE_ID}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        flashIndicator('Delete failed', false);
+        return;
+      }
+      const data = await r.json();
+      if (data.updated_at) window.NOTE_UPDATED_AT = data.updated_at;
+
+      // Re-fetch content — server spliced the block out
+      const fresh = await fetch(`/api/notes/${window.NOTE_ID}`);
+      if (fresh.ok) {
+        const freshData = await fresh.json();
+        if (typeof editor.setContent === 'function' && freshData.content !== undefined) {
+          editor.setContent(freshData.content);
+        }
+      }
+      await fetchBlocks();
+      renderPreview();
+      flashIndicator('Block deleted', true);
+    } catch (e) {
+      flashIndicator('Error: ' + e.message, false);
+    }
+  }
+  
+  async function openBlockZoomEditor(block, mode = 'edit') {
+    const modal = document.getElementById('zoom-block-modal');
+    const editorHost = document.getElementById('zoom-block-editor');
+    const saveBtn = document.getElementById('zoom-block-save');
+    const saveOpenBtn = document.getElementById('zoom-block-save-open');    
+    const tsPopover = document.getElementById('zoom-block-ts-popover');
+
+    if (!modal || !editorHost || !saveBtn) return;
+
+    modal.classList.add('open');
+    editorHost.innerHTML = '';
+    
+    // Clone the interactive buttons/inputs so we shed any listeners
+    // accumulated from previous modal opens. Without this, each open
+    // stacks another `change` listener on the file input, and stale
+    // listeners can fire against a detached editor from a prior
+    // session — making it look like nothing happens.
+    ['zoom-block-attach-btn', 'zoom-block-file-input', 'zoom-block-timestamp-btn'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el && el.parentNode) {
+        el.parentNode.replaceChild(el.cloneNode(true), el);
+      }
+    });
+
+    // Re-grab refs after the clone (the cloned elements are live).
+    const attachBtn = document.getElementById('zoom-block-attach-btn');
+    const fileInput = document.getElementById('zoom-block-file-input');
+    const tsBtn = document.getElementById('zoom-block-timestamp-btn');    
+
+    // Update header + save button label based on mode
+    const modalHead = modal.querySelector('.modal-head span');
+    let headerLabel = 'Edit';
+    let saveLabel = 'Save';
+    if (mode === 'add') { headerLabel = 'Add'; saveLabel = 'Add'; }
+    else if (mode === 'new_child') { headerLabel = 'New child note'; saveLabel = 'Save'; }
+    
+    if (modalHead) modalHead.textContent = headerLabel;
+    saveBtn.textContent = saveLabel;
+    
+    if (saveOpenBtn) {
+      saveOpenBtn.style.display = (mode === 'new_child') ? 'inline-block' : 'none';
+    }    
+
+    // Show/hide the title input
+    const titleInput = document.getElementById('zoom-block-title');
+    if (titleInput) {
+      if (mode === 'new_child') {
+        titleInput.classList.add('shown');
+        titleInput.value = '';
+      } else {
+        titleInput.classList.remove('shown');
+        titleInput.value = '';
+      }
+    }
+
+    let zoomEditor = null;
+    let zoomAutocomplete = null;
+    let tsWasEditing = false;
+    let attachWasEditing = false;
+
+    requestAnimationFrame(() => {
+      if (typeof window.__createEditor !== 'function') {
+        alert('Editor engine not loaded');
+        return;
+      }
+
+      zoomEditor = window.__createEditor(
+        editorHost,
+        (mode === 'add' || mode === 'new_child' || !block) ? '' : (block.text || ''),
+        () => {},
+        () => {}
+      );
+
+      // Focus the title input in new_child mode, otherwise the body editor.
+      if (mode === 'new_child' && titleInput) {
+        titleInput.focus();
+      } else {
+        zoomEditor.focus();
+      }
+
+      // Autocomplete popup element, appended inside the modal sheet
+      let acEl = document.getElementById('zoom-block-autocomplete');
+      if (!acEl) {
+        acEl = document.createElement('div');
+        acEl.id = 'zoom-block-autocomplete';
+        acEl.className = 'autocomplete hidden';
+        const sheet = modal.querySelector('.modal-sheet') || modal;
+        sheet.appendChild(acEl);
+      }
+      acEl.innerHTML = '';
+
+      zoomAutocomplete = createOverlayAutocomplete({
+        editor: zoomEditor,
+        popupEl: acEl,
+        onInsert: () => {},
+      });
+
+      // Timestamp popover
+      const closeTs = () => {
+        if (tsPopover) tsPopover.hidden = true;
+      };
+      const openTs = () => {
+        if (!tsPopover || !tsBtn) return;
+        tsPopover.hidden = false;
+        const r = tsBtn.getBoundingClientRect();
+        const h = tsPopover.offsetHeight || 120;
+        const w = tsPopover.offsetWidth || 60;
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        let left = r.left;
+        let top = r.top - h - 6;
+        if (top < 8) top = r.bottom + 6;
+        if (left + w > vw - 8) left = vw - w - 8;
+        if (left < 8) left = 8;
+        tsPopover.style.left = left + 'px';
+        tsPopover.style.top = top + 'px';
+      };
+
+      if (tsBtn && tsPopover) {
+        tsBtn.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          tsWasEditing = !!(zoomEditor && zoomEditor.view && zoomEditor.view.hasFocus);
+        });
+        tsBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (tsPopover.hidden) openTs();
+          else closeTs();
+        });
+        tsPopover.addEventListener('mousedown', (e) => e.preventDefault());
+        tsPopover.addEventListener('click', (e) => {
+          const btn = e.target.closest('[data-ts]');
+          if (!btn) return;
+          const now = new Date();
+          const pad = n => String(n).padStart(2, '0');
+          const date = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+          const time = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+          const kind = btn.dataset.ts;
+          let text = '';
+          if (kind === 'date') text = date;
+          else if (kind === 'time') text = time;
+          else text = `${date} ${time}`;
+          if (typeof zoomEditor.insertSmart === 'function') {
+            zoomEditor.insertSmart(text, tsWasEditing);
+          } else {
+            zoomEditor.insertAtCursor(text);
+          }
+          closeTs();
+        });
+      }
+
+      // Attach file input
+      if (attachBtn && fileInput) {
+        attachBtn.addEventListener('mousedown', () => {
+          attachWasEditing = !!(zoomEditor && zoomEditor.view && zoomEditor.view.hasFocus);
+        });
+        attachBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          fileInput.click();
+        });
+        fileInput.addEventListener('change', async (e) => {
+          const file = e.target.files && e.target.files[0];
+          e.target.value = '';
+          if (!file) return;
+          try {
+            const fd = new FormData();
+            fd.append('file', file);
+            const r = await fetch(`/note/${window.NOTE_ID}/upload`, {
+              method: 'POST',
+              body: fd,
+            });
+            if (!r.ok) {
+              alert('Upload failed: HTTP ' + r.status);
+              return;
+            }
+            const data = await r.json();
+            const f = data.files && data.files[0];
+            if (!f) {
+              alert('Upload failed');
+              return;
+            }
+            const snippet = f.is_image
+              ? `![${f.name}](${f.url})\n\n`
+              : `[${f.name}](${f.url})\n\n`;
+            if (typeof zoomEditor.insertSmart === 'function') {
+              zoomEditor.insertSmart(snippet, attachWasEditing);
+            } else {
+              zoomEditor.insertAtCursor(snippet);
+            }
+          } catch (err) {
+            alert('Upload failed: ' + err.message);
+          }
+        });
+      }
+
+      // Save handler
+      const performSave = async (andOpen = false) => {
+        const newText = zoomEditor.getContent().trim();
+        
+        // Only block empty saves if we're editing or adding a block.
+        // For new_child, it's perfectly fine to create a note with just a title.
+        if (!newText && mode !== 'new_child') {
+          alert('Empty block — nothing to save.');
+          return;
+        }
+
+        saveBtn.textContent = 'Saving…';
+        saveBtn.disabled = true;
+        if (saveOpenBtn) saveOpenBtn.disabled = true;
+
+        try {
+          let newContent = null;
+          let r;
+
+          if (mode === 'new_child') {
+            // Create a new note under the current one.
+            const titleVal = (titleInput ? titleInput.value.trim() : '');
+            r = await fetch('/note/create-child', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title: titleVal,
+                content: newText,
+                parent_id: window.NOTE_ID,
+              }),
+            });
+          } else if (mode === 'add') {
+            // Append mode: build new content, set it into the editor,
+            // then save via the normal /note/<id>/save endpoint.
+            const currentContent = editor.getContent() || '';
+            const trimmed = currentContent.replace(/\s+$/, '');
+            const separator = trimmed.length > 0 ? '\n\n' : '';
+            newContent = trimmed + separator + newText + '\n';
+
+            editor.setContent(newContent);
+
+            r = await fetch(`/note/${window.NOTE_ID}/save`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title: titleEl.value,
+                content: newContent,
+                properties: { ...properties },
+                due_at: localInputToUtc(dueEl.value),
+                link_ids: [],
+                _client_updated_at: window.NOTE_UPDATED_AT || '',
+                _client_id: CLIENT_ID,
+              }),
+            });
+          } else {
+            // Edit mode: replace the existing block.
+            r = await fetch('/api/block/update', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                note_id: window.NOTE_ID,
+                block_id: block.id,
+                old_text: block.text,
+                text: newText,
+              }),
+            });
+          }
+
+          if (!r.ok) {
+            const errBody = await r.text();
+            throw new Error('Server said ' + r.status + ': ' + errBody.slice(0, 100));
+          }
+
+          const data = await r.json();
+
+          if (mode === 'new_child') {
+            // Save & Open: navigate straight to the new note
+            if (andOpen && data.url) {
+              if (typeof window.showToast === 'function') {
+                window.showToast('Child note created');
+              }
+              localStorage.setItem('sidebar-collapsed', '1');
+              window.instantCollapseBeforeNav?.();
+              window.instantNavigate?.();
+              location.href = data.url;
+              return;
+            } 
+            // Standard Save: reload to sync the parent's outline
+            else {
+              if (typeof window.showToast === 'function') {
+                window.showToast('Child note created');
+              }
+              setTimeout(() => location.reload(), 150);
+              return;
+            }
+          } else {
+            if (data.updated_at) {
+              window.NOTE_UPDATED_AT = data.updated_at;
+            } else {
+              const fresh = await fetch(`/api/notes/${window.NOTE_ID}`);
+              if (fresh.ok) {
+                const fd = await fresh.json();
+                window.NOTE_UPDATED_AT = fd.updated_at || '';
+              }
+            }
+
+            if (editor) {
+              if (mode === 'edit' && data.content !== undefined) {
+                editor.setContent(data.content);
+              }
+              if (mode === 'add') {
+                await fetchBlocks();
+              }
+              if (typeof renderPreview === 'function') renderPreview();
+            }
+          }
+
+          if (window.__zoomAutocompleteCleanup) {
+            try { window.__zoomAutocompleteCleanup(); } catch (e) {}
+            window.__zoomAutocompleteCleanup = null;
+          }
+          if (acEl && acEl.parentNode) acEl.remove();
+          modal.classList.remove('open');
+          if (typeof window.showToast === 'function') {
+            window.showToast(
+              mode === 'new_child' ? 'Child note created' :
+              mode === 'add' ? 'Block added' :
+              'Block updated'
+            );
+          }
+        } catch (e) {
+          alert('Failed: ' + e.message);
+        } finally {
+          if (mode === 'new_child') saveBtn.textContent = 'Save';
+          else if (mode === 'add') saveBtn.textContent = 'Add';
+          else saveBtn.textContent = 'Save';
+          saveBtn.disabled = false;
+          if (saveOpenBtn) saveOpenBtn.disabled = false;
+        }
+      };
+
+      saveBtn.onclick = () => performSave(false);
+      if (saveOpenBtn) saveOpenBtn.onclick = () => performSave(true);
+    });
+  }
+  
+  function openBlockMovePicker(block) {
+    const modal = document.getElementById('note-move-modal');
+    const input = document.getElementById('nm-input');
+    const results = document.getElementById('nm-results');
+    if (!modal || !input || !results) {
+      alert('Move picker unavailable');
+      return;
+    }
+
+    let idx = 0;
+    let items = [];
+    let timer = null;
+    let submitting = false;
+
+    function closePicker() {
+      modal.classList.remove('open');
+      results.innerHTML = '';
+      input.removeEventListener('input', onInput);
+      input.removeEventListener('keydown', onKey);
+      modal.removeEventListener('click', onModalClick);
+    }
+
+    function escapeHtmlLocal(s) {
+      return String(s || '').replace(/[&<>"']/g, c => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+      }[c]));
+    }
+
+    async function fetchItems(q) {
+      try {
+        const url = `/api/notes?q=${encodeURIComponent(q)}&limit=20&exclude=${window.NOTE_ID}`;
+        const r = await fetch(url);
+        items = await r.json();
+        idx = 0;
+        render();
+      } catch (e) {
+        console.error('Move picker fetch error', e);
+        results.innerHTML = '<div style="padding:10px;color:var(--danger);">Error loading notes.</div>';
+      }
+    }
+
+    function render() {
+      const inputVal = input.value.trim();
+
+      let createOffer = null;
+      if (inputVal) {
+        const exact = items.some(n =>
+          (n.title || '').toLowerCase() === inputVal.toLowerCase()
+        );
+        if (!exact) createOffer = inputVal;
+      }
+
+      let html = '';
+      if (createOffer) {
+        html +=
+          `<div class="ac-item ac-create${idx === 0 ? ' sel' : ''}" data-create="1">` +
+          `<span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px">add</span>` +
+          `Create "${escapeHtmlLocal(createOffer)}" and move here` +
+          `</div>`;
+      }
+      if (items.length === 0 && !createOffer) {
+        html += `<p class="modal-empty">No matching notes.</p>`;
+      } else if (items.length > 0) {
+        if (createOffer) {
+          html += `<div class="modal-section-label">Notes</div>`;
+        }
+        items.forEach((n, i) => {
+          const rowIdx = createOffer ? i + 1 : i;
+          html +=
+            `<div class="ac-item${rowIdx === idx ? ' sel' : ''}" data-id="${n.id}">` +
+            `${escapeHtmlLocal(n.title)}` +
+            `</div>`;
+        });
+      }
+      results.innerHTML = html;
+
+      results.querySelectorAll('.ac-item').forEach(el => {
+        el.addEventListener('mousedown', async (ev) => {
+          ev.preventDefault();
+          if (submitting) return;
+          if (el.dataset.create) {
+            await doMove(block, { create_title: input.value.trim() });
+          } else {
+            await doMove(block, { target_id: Number(el.dataset.id) });
+          }
+        });
+      });
+    }
+
+    async function doMove(block, choice) {
+      if (submitting) return;
+      submitting = true;
+
+      const payload = {
+        source_note_id: Number(window.NOTE_ID),
+        block_id: block.id,
+        block_text: block.text,
+      };
+      if (choice.create_title) {
+        payload.create_target = { title: choice.create_title };
+      } else {
+        payload.target_note_id = choice.target_id;
+      }
+
+      try {
+        const r = await fetch('/api/block/move', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          alert(err.error || 'Move failed');
+          submitting = false;
+          return;
+        }
+        const data = await r.json();
+        closePicker();
+
+        // Re-fetch content (server spliced the block out)
+        const fresh = await fetch(`/api/notes/${window.NOTE_ID}`);
+        if (fresh.ok) {
+          const freshData = await fresh.json();
+          if (typeof editor.setContent === 'function' && freshData.content !== undefined) {
+            editor.setContent(freshData.content);
+          }
+        }
+        await fetchBlocks();
+        renderPreview();
+        if (typeof window.showToast === 'function') {
+          window.showToast('Block moved to "' + data.target_note_title + '"');
+        } else {
+          flashIndicator('Block moved', true);
+        }
+
+        // Refresh sidebar in background (in case a new target note
+        // was created, it should appear in the tree)
+        if (typeof window.__refreshTree === 'function') {
+          setTimeout(() => window.__refreshTree(), 200);
+        }
+      } catch (e) {
+        alert('Move failed: ' + e.message);
+        submitting = false;
+      }
+    }
+
+    function onInput() {
+      clearTimeout(timer);
+      timer = setTimeout(() => fetchItems(input.value.trim()), 80);
+    }
+
+    function onKey(ev) {
+      const hasCreate = !!results.querySelector('.ac-create');
+      const totalRows = (hasCreate ? 1 : 0) + items.length;
+      if (ev.key === 'ArrowDown') {
+        idx = Math.min(idx + 1, Math.max(0, totalRows - 1));
+        render();
+        ev.preventDefault();
+      } else if (ev.key === 'ArrowUp') {
+        idx = Math.max(idx - 1, 0);
+        render();
+        ev.preventDefault();
+      } else if (ev.key === 'Enter') {
+        if (submitting) return;
+        ev.preventDefault();
+        if (hasCreate && idx === 0) {
+          doMove(block, { create_title: input.value.trim() });
+        } else {
+          const shift = hasCreate ? 1 : 0;
+          const item = items[idx - shift];
+          if (item) doMove(block, { target_id: item.id });
+        }
+      } else if (ev.key === 'Escape') {
+        closePicker();
+      }
+    }
+
+    function onModalClick(ev) {
+      if (ev.target.closest('[data-close]')) closePicker();
+    }
+
+    modal.classList.add('open');
+    input.value = '';
+    idx = 0;
+    setTimeout(() => input.focus(), 60);
+    fetchItems('');
+    input.addEventListener('input', onInput);
+    input.addEventListener('keydown', onKey);
+    modal.addEventListener('click', onModalClick);
+  }  
+
+  // Delegated click handler for block menu buttons
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.block-menu-btn');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openBlockMenu(btn);
+  }, true);  
+  
+  // Delegated handler for the "+ Add block" button
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('#block-add-btn');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openBlockZoomEditor({ id: null, text: '', due_at: null }, 'add');
+  }, true);  
+  
+  // Delegated handler for the "+ Add child note" button
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('#block-add-child-btn');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openBlockZoomEditor(null, 'new_child');
+  }, true);  
+
+  function renderPreview() {
+    if (!editor) return;
+
+    // If we're not in preview/split mode, skip rendering the preview body
+    // entirely (the textarea is the source of truth while editing).
+    // BUT we still want to keep the block cache fresh.
+    if (!bodyEl || !bodyEl.classList.contains('split')) {
+      scheduleBlockFetch();
+      return;
+    }
+
+    const blocks = getCachedBlocks();
+    if (!blocks) {
+      // First render before blocks arrive — show a lightweight spinner
+      // rather than the full markdown (which will be replaced in ~180ms).
+      previewEl.innerHTML = '<div class="editor-hint" style="position: static; padding: 0;">Loading…</div>';
+      scheduleBlockFetch();
+      return;
+    }
+
+    const md = editor.getContent() || '';
+
+    // The top row (add block + add child) is always rendered, so
+    // these actions remain available even on a completely empty note.
+    const topRowHTML =
+      `<div class="block-add-row">` +
+      `<button type="button" class="block-add-child-btn" id="block-add-child-btn" title="New child note">` +
+      `<span class="material-symbols-rounded">subdirectory_arrow_right</span>` +
+      `</button>` +
+      `<button type="button" class="block-add-btn" id="block-add-btn" title="Add a new block at the end">` +
+      `<span class="material-symbols-rounded">add</span>` +
+      `</button>` +
+      `</div>`;
+
+    if (!md.trim()) {
+      previewEl.innerHTML = topRowHTML +
+        '<div class="editor-hint" style="position: static; padding: 0;">Write…</div>';
+      scheduleBlockFetch();
+      return;
+    }
+
+    previewEl.innerHTML = topRowHTML + renderBlockCards(blocks);
+
+    // Lazy-load images, force external links to new tab
+    previewEl.querySelectorAll('img').forEach(img => {
+      img.loading = 'lazy';
+      img.decoding = 'async';
+    });
+    previewEl.querySelectorAll('a').forEach(a => {
+      const href = a.getAttribute('href');
+      if (href && /^https?:\/\//i.test(href)) {
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
+      }
+    });
+
+    // Render embeds, syntax highlighting, wikilinks, task checkboxes
+    // inside every block-card body
+    previewEl.querySelectorAll('.block-card-body').forEach(async bodyElInner => {
+      try {
+        await window.fillEmbeds(bodyElInner);
+        bodyElInner.querySelectorAll('a[href^="wikilink:"]').forEach(a => {
+          a.classList.add('wikilink');
+          a.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (typeof window.__savePending === 'function' && window.__savePending()) {
+              try { await window.__flushSave?.(); } catch (err) {}
+            }
+            const title = decodeURIComponent(a.getAttribute('href').slice('wikilink:'.length));
+            try {
+              const r = await fetch(`/api/notes/by-title/${encodeURIComponent(title)}`);
+              if (!r.ok) {
+                alert('Note not found: ' + title);
+                return;
+              }
+              const n = await r.json();
+              // If the wikilink has a block anchor, we MUST do a real
+              // navigation (the swap doesn't scroll to blocks).
+              if (n.block_id) {
+                instantCollapseBeforeNav();
+                instantNavigate();
+                location.href = `/?note=${n.id}&block=${n.block_id}`;
+                return;
+              }
+              if (typeof window.__swapNoteInPlace === 'function') {
+                const ok = await window.__swapNoteInPlace(Number(n.id));
+                if (ok) return;
+              }
+              instantCollapseBeforeNav();
+              instantNavigate();
+              location.href = `/?note=${n.id}`;
+            } catch (err) {
+              alert('Error opening note: ' + err.message);
+            }
+          });
+        });
+        if (window.hljs) {
+          bodyElInner.querySelectorAll('pre code').forEach(block => {
+            window.hljs.highlightElement(block);
+          });
+        }
+      } catch (e) {}
+    });
+
+    // Task checkboxes in block cards
+    wirePreviewTaskCheckboxes();
+
+    // Drag-and-drop for task lists (still works — scoped to ULs inside cards)
+    wirePreviewDragDrop();
+
+    // Search-term highlighting
+    if (window.SEARCH_QUERY && window.SEARCH_QUERY.trim()) {
+      highlightSearchTerms(previewEl, window.SEARCH_QUERY);
+    } else if (window.CSS && CSS.highlights) {
+      CSS.highlights.delete('search-results');
+    }
+
+    // (Block cache refresh is triggered explicitly by save/mount/toggle,
+    // not from renderPreview — otherwise unmarshaled block IDs change
+    // on every fetch and cause an infinite render loop.)
+    
+    // Handle scrolling to a specific block if the URL asks for it
+    const urlParams = new URLSearchParams(window.location.search);
+    const targetBlockId = urlParams.get('block');
+
+    if (targetBlockId && window.__scrolledBlockId !== targetBlockId) {
+      
+      const scrollToCard = (attempt) => {
+        const card = previewEl.querySelector(`.block-card[data-block-id="${targetBlockId}"]`);
+        
+        if (card) {
+          window.__scrolledBlockId = targetBlockId;
+
+          // Try scrolling now — if it lands wrong, retry after images load
+          card.scrollIntoView({ behavior: 'auto', block: 'start' });
+
+          // Also retry on image load, in case layout shifted
+          const doRetryScroll = () => {
+            card.scrollIntoView({ behavior: 'auto', block: 'start' });
+          };
+          previewEl.querySelectorAll('img').forEach(img => {
+            if (!img.complete) {
+              img.addEventListener('load', doRetryScroll, { once: true });
+            }
+          });
+
+          card.style.transition = 'background 0.3s ease';
+          card.style.background = 'var(--accent-soft)';
+          setTimeout(() => { card.style.background = ''; }, 1500);
+
+          urlParams.delete('block');
+          const newUrl = window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '');
+          window.history.replaceState({}, '', newUrl);
+
+        } else if (attempt < 20) {
+          setTimeout(() => scrollToCard(attempt + 1), 150);
+        }
+      };
+
+      scrollToCard(0);
+    }
+  }
+  
+  function wirePreviewTaskCheckboxes() {
+    if (!editor) return;
+    const boxes = previewEl.querySelectorAll('.preview-body li input[type="checkbox"]');
+    boxes.forEach((box, idx) => {
+      box.removeAttribute('disabled');
+      box.style.cursor = 'pointer';
+      box.dataset.taskIndex = String(idx);
+      box.addEventListener('click', (e) => {
+        e.preventDefault();
+        toggleTaskAtIndex(idx);
+      });
+    });
+  }
+
+  function toggleTaskAtIndex(index) {
+    if (!editor) return;
+    const content = editor.getContent();
+    const re = /^(\s*[-*+]\s+\[)([ xX])(\])/gm;
+    let match;
+    const matches = [];
+    while ((match = re.exec(content)) !== null) {
+      matches.push({ start: match.index, end: match.index + match[0].length, state: match[2], match });
+    }
+    if (index < 0 || index >= matches.length) return;
+    const m = matches[index];
+    const currentState = m.state.toLowerCase() === 'x' ? 'x' : ' ';
+    const newState = currentState === 'x' ? ' ' : 'x';
+    const replacement = `${m.match[1]}${newState}${m.match[3]}`;
+    editor.replaceRange(m.start, m.end, replacement);
+    renderPreview();
+    scheduleSave();
+  }
+
+  if (previewEl) previewEl.addEventListener('click', async (e) => {
+    const embed = e.target.closest('.embed[data-embed-title]');
+    if (!embed) return;
+    if (e.target.closest('a, input[type="checkbox"]')) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    const title = embed.getAttribute('data-embed-title') || '';
+    if (!title) return;
+
+    // --- Search embed: navigate to the saved search ---
+    if (embed.dataset.embedKind === 'search') {
+      // Title is either "#123" (id) or a name
+      const idMatch = title.match(/^#(\d+)$/);
+      let searchId = null;
+      let searchParams = '';
+
+      if (idMatch) {
+        searchId = idMatch[1];
+      } else {
+        // Legacy name-based embed: resolve to an id
+        try {
+          const r = await fetch(`/api/searches?q=${encodeURIComponent(title)}&limit=1`);
+          const searches = await r.json();
+          const match = searches.find(s => (s.name || '').toLowerCase() === title.trim().toLowerCase());
+          if (match) {
+            searchId = match.id;
+            searchParams = match.params || '';
+          }
+        } catch (err) {}
+      }
+
+      if (!searchId) return;
+
+      // Try to preserve params from the embed's own rendering, or fetch fresh
+      if (!searchParams) {
+        try {
+          const r = await fetch(`/api/searches?q=&limit=200`);
+          const searches = await r.json();
+          const match = searches.find(s => String(s.id) === String(searchId));
+          if (match) searchParams = match.params || '';
+        } catch (err) {}
+      }
+
+      const url = new URL('/', location.origin);
+      const p = new URLSearchParams(searchParams);
+      p.set('search', searchId);
+      url.search = p.toString();
+      localStorage.setItem('sidebar-collapsed', '1');
+      window.instantNavigate?.();
+      location.href = url.toString();
+      return;
+    }
+
+    // --- Note embed: open or create the note ---
+    if (typeof window.__savePending === 'function' && window.__savePending()) {
+      try { await window.__flushSave?.(); } catch (err) {}
+    }
+
+    let targetId = null;
+    try {
+      const r = await fetch(`/api/notes/by-title/${encodeURIComponent(title)}`);
+      if (r.ok) {
+        const n = await r.json();
+        targetId = n.id;
+      }
+    } catch (err) {}
+
+    if (!targetId) {
+      try {
+        const r = await fetch('/note/create-by-title', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title }),
+        });
+        if (r.ok) {
+          const data = await r.json();
+          targetId = data.id;
+        }
+      } catch (err) {}
+    }
+
+    if (targetId) {
+      localStorage.setItem('sidebar-collapsed', '1');
+      window.instantNavigate?.();
+      location.href = `/?note=${targetId}`;
+    } else {
+      alert('Could not open or create note: ' + title);
+    }
+  });
+
+  function updatePreviewBtn() {
+    if (!bodyEl || !toggleBtn) return;
+    const isSplit = bodyEl.classList.contains('split');
+    toggleBtn.querySelector('.material-symbols-rounded').textContent =
+      isSplit ? 'edit_note' : 'visibility';
+    toggleBtn.title = isSplit ? 'Back to editor' : 'Preview';
+  }
+
+  if (bodyEl && toggleBtn) {
+    bodyEl.classList.add('split');
+
+    toggleBtn.addEventListener('click', () => {
+      const isSwitchingToEdit = bodyEl.classList.contains('split');
+      
+      const scrollEl = isSwitchingToEdit ? previewWrap : document.querySelector('.textarea-wrap');
+      const savedScrollTop = scrollEl ? scrollEl.scrollTop : 0;
+
+      if (editor && editor.view.hasFocus) {
+        editor.view.contentDOM.blur();
+      }
+
+      bodyEl.classList.toggle('split');
+      updatePreviewBtn();
+
+      // When switching TO preview, ensure blocks are rendered.
+      if (bodyEl.classList.contains('split')) {
+        if (typeof fetchBlocks === 'function' && typeof renderPreview === 'function') {
+          if (typeof getCachedBlocks === 'function' && !getCachedBlocks()) {
+            // Cache empty — fetch, then render
+            fetchBlocks().then(() => renderPreview());
+          } else {
+            // Cache exists — render immediately
+            renderPreview();
+          }
+        }
+      }
+
+      requestAnimationFrame(() => {
+        const newScrollEl = isSwitchingToEdit ? document.querySelector('.textarea-wrap') : previewWrap;
+        
+        if (newScrollEl) {
+          newScrollEl.scrollTop = savedScrollTop;
+          
+          setTimeout(() => { newScrollEl.scrollTop = savedScrollTop; }, 50);
+          setTimeout(() => { newScrollEl.scrollTop = savedScrollTop; }, 150);
+          setTimeout(() => { newScrollEl.scrollTop = savedScrollTop; }, 300);
+        }
+      });
+    });
+  }
+  if (bodyEl) {
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        bodyEl.classList.toggle('split');
+        updatePreviewBtn();
+
+        // When switching TO preview via Ctrl+P, also render the blocks
+        if (bodyEl.classList.contains('split')) {
+          if (typeof fetchBlocks === 'function' && typeof renderPreview === 'function') {
+            if (typeof getCachedBlocks === 'function' && !getCachedBlocks()) {
+              fetchBlocks().then(() => renderPreview());
+            } else {
+              renderPreview();
+            }
+          }
+        }
+      }
+    });
+  }
+
+  if (window.matchMedia('(max-width: 720px)').matches) {
+    if (previewWrap && bodyEl) {
+      previewWrap.addEventListener('click', (e) => {
+        if (e.target.closest('a, input[type="checkbox"], [data-no-preview-tap], .embed')) return;
+
+        if (window.__blockMenuDismissedAt && Date.now() - window.__blockMenuDismissedAt < 400) {
+          e.preventDefault();
+          return;
+        }
+
+        if (bodyEl.classList.contains('split')) {
+          e.preventDefault();
+          
+          const savedScrollTop = previewWrap.scrollTop;
+          
+          document.documentElement.classList.add('no-transition');
+          bodyEl.classList.remove('split');
+          updatePreviewBtn();
+
+          if (document.activeElement && document.activeElement.blur) {
+            try { document.activeElement.blur(); } catch (err) {}
+          }
+
+          requestAnimationFrame(() => {
+            const editorWrap = document.querySelector('.textarea-wrap');
+            if (editorWrap) {
+              editorWrap.scrollTop = savedScrollTop;
+              setTimeout(() => { editorWrap.scrollTop = savedScrollTop; }, 50);
+              setTimeout(() => { editorWrap.scrollTop = savedScrollTop; }, 150);
+            }
+            
+            setTimeout(() => document.documentElement.classList.remove('no-transition'), 50);
+            window.__suppressEditorTapUntil = Date.now() + 400;
+          });
+        }
+      });
+    }
+  }
+
+  titleEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const firstProp = document.querySelector('.props-strip input');
+      if (firstProp) {
+        firstProp.focus();
+        if (typeof firstProp.select === 'function') {
+          try { firstProp.select(); } catch (err) {}
+        }
+      } else {
+        focusEditorSafely();
+      }
+    }
+  });
+  
+  const quickNoteBtn = $('#quick-note-btn');
+  if (quickNoteBtn) {
+    quickNoteBtn.addEventListener('click', async () => {
+      if (typeof window.__savePending === 'function' && window.__savePending()) {
+        try { await window.__flushSave(); } catch (e) {}
+      }
+      
+      try {
+        const r = await fetch('/note/quick', { method: 'POST' });
+        const data = await r.json();
+        if (data.ok && data.url) {
+          localStorage.setItem('sidebar-collapsed', '1');
+          window.instantNavigate?.();
+          location.replace(data.url);
+        } else {
+          alert('Could not create quick note.');
+        }
+      } catch (err) {
+        alert('Failed: ' + err.message);
+      }
+    });
+  }
+  
+  const actionBarQsBtn = $('#action-bar-quick-switcher');
+  if (actionBarQsBtn) {
+    actionBarQsBtn.addEventListener('click', () => {
+      const qsBtn = document.getElementById('quick-switcher-btn');
+      if (qsBtn) qsBtn.click();
+    });
+  }  
+
+  const addTopBtn = $('#add-top-btn');
+  if (addTopBtn) {
+    addTopBtn.addEventListener('click', () => {
+      if (typeof window.__openNewNoteModal === 'function') {
+        window.__openNewNoteModal(window.ROOT_ID || null);
+      }
+    });
+  }
+
+  const addMapBtn = $('#add-map-btn');
+  if (addMapBtn) {
+    addMapBtn.addEventListener('click', async () => {
+      try {
+        const r = await fetch('/note/new-map', { method: 'POST' });
+        const data = await r.json();
+        if (data.ok && data.url) {
+          localStorage.setItem('sidebar-collapsed', '1');
+          window.instantNavigate?.();
+          location.replace(data.url);
+        }
+      } catch (err) {
+        alert('Failed to create map note: ' + err.message);
+      }
+    });
+  }
+
+  // --- ADD THE DASHBOARD BUTTON CODE HERE ---
+  const openDashboardBtn = $('#open-dashboard-btn');
+  if (openDashboardBtn) {
+    openDashboardBtn.addEventListener('click', () => {
+      if (typeof window.__savePending === 'function' && window.__savePending()) {
+        try { window.__flushSave(); } catch (e) {}
+      }
+      localStorage.setItem('sidebar-collapsed', '1');
+      window.instantNavigate?.();
+      location.href = '/dashboard';
+    });
+  }
+  // ------------------------------------------
+
+  // (The child-note button now lives in the preview body — see the
+  // #block-add-child-btn delegated handler above.)
+  
+  // --- Task Buttons ---
+
+  // 1. Add Subtask Button
+  const addSubtaskBtn = $('#add-subtask-btn');
+  if (addSubtaskBtn) {
+    addSubtaskBtn.addEventListener('click', async () => {
+      if (typeof window.__savePending === 'function' && window.__savePending()) {
+        try { await window.__flushSave(); } catch (e) {}
+      }
+      try {
+        const r = await fetch('/api/note/create-task', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parent_id: window.NOTE_ID })
+        });
+        const data = await r.json();
+        if (data.ok && data.id) {
+          location.href = `/?note=${data.id}`;
+        } else {
+          alert(data.error || 'Failed to create subtask');
+        }
+      } catch (err) {
+        alert('Error: ' + err.message);
+      }
+    });
+  }
+
+  // 2. Make Subtask Button (opens existing parent picker)
+  // Expose the picker as a global function so the dynamically injected button can use it
+  window.__openMakeSubtaskPicker = function() {
+    const modal = document.getElementById('note-move-modal');
+    const input = document.getElementById('nm-input');
+    const results = document.getElementById('nm-results');
+    
+    if (!modal || !input || !results) {
+      alert('Move picker HTML not found');
+      return;
+    }
+
+    const esc = (s) => String(s || '').replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+
+    let idx = 0;
+    let items = [];
+    let timer = null;
+
+    function closePicker() {
+      modal.classList.remove('open');
+      results.innerHTML = '';
+      input.removeEventListener('input', onInput);
+      input.removeEventListener('keydown', onKey);
+      modal.removeEventListener('click', onModalClick);
+    }
+
+    async function fetchItems(q) {
+      try {
+        const r = await fetch(`/api/notes?q=${encodeURIComponent(q)}&limit=20&exclude=${window.NOTE_ID}`);
+        if (!r.ok) throw new Error('Fetch failed');
+        items = await r.json();
+        idx = 0;
+        render();
+      } catch (e) {
+        console.error("Picker fetch error:", e);
+        results.innerHTML = '<div style="padding:10px;color:red;">Error loading notes.</div>';
+      }
+    }
+
+    function render() {
+      const topLevel = { id: 0, title: 'Top level' };
+      const inputVal = input.value.trim();
+
+      let createOffer = null;
+      if (inputVal) {
+        const exact = items.some(n => (n.title || '').toLowerCase() === inputVal.toLowerCase());
+        if (!exact) createOffer = inputVal;
+      }
+
+      const rows = [topLevel, ...items];
+      results.innerHTML =
+        (createOffer
+          ? `<div class="ac-item ac-create${idx === 0 ? ' sel' : ''}" data-create="1">
+               <span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px">add</span>
+               Create "${esc(createOffer)}" and move here
+             </div>`
+          : '') +
+        rows.map((n, i) => {
+          const rowIdx = createOffer ? i + 1 : i;
+          return `<div class="ac-item${rowIdx === idx ? ' sel' : ''}" data-id="${n.id}">${esc(n.title)}</div>`;
+        }).join('');
+
+      results.querySelectorAll('.ac-item').forEach(el => {
+        el.addEventListener('mousedown', async (ev) => {
+          ev.preventDefault();
+          if (el.dataset.create) {
+            await createAndMove(input.value.trim());
+          } else {
+            await choose(Number(el.dataset.id));
+          }
+        });
+      });
+    }
+
+    async function choose(targetId) {
+      const parent_id = targetId === 0 ? null : targetId;
+      const r = await fetch(`/api/note/${window.NOTE_ID}/make-subtask`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_id }),
+      });
+      if (r.ok) {
+        closePicker();
+        if (typeof window.__refreshTree === 'function') window.__refreshTree();
+        if (typeof window.__refreshOutline === 'function') window.__refreshOutline();
+        // The note properties just changed (merged with task template)
+        // So we should reload just the properties strip
+        location.reload(); // We still need a reload for the properties, but we can optimize this later if needed
+      } else {
+        const d = await r.json().catch(() => ({}));
+        alert(d.error || 'Move failed');
+      }
+    }
+
+    async function createAndMove(title) {
+      if (!title) return;
+      try {
+        const cr = await fetch('/note/create-by-title', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title }),
+        });
+        const cd = await cr.json();
+        if (!cd.ok || !cd.id) {
+          alert(cd.error || 'Could not create note');
+          return;
+        }
+        await choose(cd.id);
+      } catch (e) {
+        alert('Move failed: ' + e.message);
+      }
+    }
+
+    function onInput() {
+      clearTimeout(timer);
+      timer = setTimeout(() => fetchItems(input.value.trim()), 80);
+    }
+
+    function onKey(ev) {
+      const hasCreate = !!results.querySelector('.ac-create');
+      const totalRows = (hasCreate ? 1 : 0) + 1 + items.length;
+      if (ev.key === 'ArrowDown') {
+        idx = Math.min(idx + 1, totalRows - 1);
+        render();
+        ev.preventDefault();
+      } else if (ev.key === 'ArrowUp') {
+        idx = Math.max(idx - 1, 0);
+        render();
+        ev.preventDefault();
+      } else if (ev.key === 'Enter') {
+        if (hasCreate && idx === 0) {
+          createAndMove(input.value.trim());
+          ev.preventDefault();
+          return;
+        }
+        const shift = hasCreate ? 1 : 0;
+        const rowIdx = idx - shift;
+        if (rowIdx === 0) {
+          choose(0);
+        } else {
+          const item = items[rowIdx - 1];
+          if (item) choose(item.id);
+        }
+        ev.preventDefault();
+      } else if (ev.key === 'Escape') {
+        closePicker();
+      }
+    }
+
+    function onModalClick(ev) {
+      if (ev.target.closest('[data-close]')) closePicker();
+    }
+
+    modal.classList.add('open');
+    input.value = '';
+    idx = 0;
+    setTimeout(() => input.focus(), 60);
+    fetchItems('');
+    input.addEventListener('input', onInput);
+    input.addEventListener('keydown', onKey);
+    modal.addEventListener('click', onModalClick);
+  };
+
+  // Bind the static button (if it exists on page load)
+  const makeSubtaskBtn = $('#make-subtask-btn');
+  if (makeSubtaskBtn) {
+    makeSubtaskBtn.addEventListener('click', () => {
+      window.__openMakeSubtaskPicker();
+    });
+  }
+
+  // Go to parent note (top bar)
+  const goToParentBtn = $('#go-to-parent-btn');
+  if (goToParentBtn) {
+    goToParentBtn.addEventListener('click', async () => {
+      const parentLabel = document.getElementById('parent-picker-label');
+      const parentTitle = parentLabel ? parentLabel.textContent.trim() : '';
+      const isTopLevel = !parentTitle || parentTitle === 'Top level';
+      if (isTopLevel) return;
+
+      if (typeof window.__savePending === 'function' && window.__savePending()) {
+        try { await window.__flushSave?.(); } catch (e) {}
+      }
+
+      try {
+        const r = await fetch(`/api/notes/by-title/${encodeURIComponent(parentTitle)}`);
+        if (!r.ok) {
+          alert('Parent note not found: ' + parentTitle);
+          return;
+        }
+        const n = await r.json();
+        if (!n || !n.id) {
+          alert('Parent note not found: ' + parentTitle);
+          return;
+        }
+        if (typeof window.__swapNoteInPlace === 'function') {
+          const ok = await window.__swapNoteInPlace(Number(n.id));
+          if (ok) return;
+        }
+        location.href = `/?note=${n.id}`;
+      } catch (e) {
+        alert('Could not load parent note.');
+      }
+    });
+  }
+
+  // Hide the "go to parent" button if this note has no parent
+  if (goToParentBtn) {
+    const parentLabel = document.getElementById('parent-picker-label');
+    const parentTitle = parentLabel ? parentLabel.textContent.trim() : '';
+    if (!parentTitle || parentTitle === 'Top level') {
+      goToParentBtn.style.display = 'none';
+    }
+  }
+
+  const openDailyBtn = $('#open-daily-btn');
+  if (openDailyBtn) {
+    openDailyBtn.addEventListener('click', () => {
+      localStorage.setItem('sidebar-collapsed', '1');
+      window.instantNavigate?.();
+      location.href = '/daily-note?nofocus=1';
+    });
+  }
+
+  const tsBtn = $('#insert-timestamp');
+  const tsPopover = $('#timestamp-popover');
+  if (tsBtn && tsPopover) {
+    let tsWasEditing = false;
+
+    const positionTsPopover = () => {
+      if (tsPopover.hidden) return;
+      const r = tsBtn.getBoundingClientRect();
+      const popoverH = tsPopover.offsetHeight || 140;
+      const popoverW = tsPopover.offsetWidth || 60;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      let left = r.left;
+      let top = r.top - popoverH - 6;
+      if (top < 8) top = r.bottom + 6;
+      if (left + popoverW > vw - 8) left = vw - popoverW - 8;
+      if (left < 8) left = 8;
+      tsPopover.style.left = left + 'px';
+      tsPopover.style.top = top + 'px';
+    };
+
+    const openTsPopover = () => {
+      tsPopover.hidden = false;
+      positionTsPopover();
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', positionTsPopover);
+      }
+    };
+
+    const closeTsPopover = () => {
+      tsPopover.hidden = true;
+      tsPopover.removeAttribute('style');
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', positionTsPopover);
+      }
+    };
+
+    tsBtn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      tsWasEditing = !!(editor && editor.view && editor.view.hasFocus);
+    });
+
+    tsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (tsPopover.hidden) {
+        openTsPopover();
+      } else {
+        closeTsPopover();
+      }
+    });
+
+    tsPopover.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+    });
+
+    document.addEventListener('click', (e) => {
+      if (tsPopover.hidden) return;
+      if (tsPopover.contains(e.target)) return;
+      if (tsBtn.contains(e.target)) return;
+      closeTsPopover();
+    });
+
+    tsPopover.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-ts]');
+      if (!btn) return;
+      const now = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      const date = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+      const time = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+      const kind = btn.dataset.ts;
+      let text = '';
+      if (kind === 'date') text = date;
+      else if (kind === 'time') text = time;
+      else text = `${date} ${time}`;
+
+      if (typeof editor.insertSmart === 'function') {
+        editor.insertSmart(text, tsWasEditing);
+      } else {
+        insertAtCursor(text);
+      }
+      renderPreview();
+      scheduleSave();
+      closeTsPopover();
+    });
+  }
+
+  const quickAppendBtn = $('#quick-append');
+  if (quickAppendBtn) {
+    let qaWasEditing = false;
+
+    quickAppendBtn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      qaWasEditing = !!(editor && editor.view && editor.view.hasFocus);
+    });
+
+    quickAppendBtn.addEventListener('click', () => {
+      const text = prompt('Append to note:');
+      if (text === null) return;
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      if (typeof editor.insertSmart === 'function') {
+        editor.insertSmart(trimmed, qaWasEditing);
+      } else {
+        insertAtCursor(trimmed);
+      }
+      renderPreview();
+      scheduleSave();
+    });
+  }
+
+  const duplicateBtn = $('#duplicate-btn');
+  if (duplicateBtn) {
+    duplicateBtn.addEventListener('click', async () => {
+      if (!confirm('Duplicate this note?')) return;
+      if (typeof window.__savePending === 'function' && window.__savePending()) {
+        try { await window.__flushSave(); } catch (e) {}
+      }
+      const r = await fetch(`/note/${window.NOTE_ID}/duplicate`, { method: 'POST' });
+      if (r.ok) {
+        const data = await r.json();
+        location.replace(`/?note=${data.id}`);
+      } else {
+        alert('Duplicate failed');
+      }
+    });
+  }
+
+  function setProp(key, value) {
+    if (value === null || value === undefined || value === '') {
+      delete properties[key];
+    } else {
+      properties[key] = String(value);
+    }
+    renderProps();
+  }
+
+  function composeReminderFromProps() {
+    const due = (properties['due'] || '').trim();
+    const time = (properties['time'] || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) return null;
+    const timeStr = /^\d{1,2}:\d{2}$/.test(time)
+      ? time.padStart(5, '0')
+      : '09:00';
+    return `${due}T${timeStr}`;
+  }
+
+  function scheduleReminderFromProps() {
+    const iso = composeReminderFromProps();
+    if (!iso) {
+      alert('The "due" property must be in YYYY-MM-DD format.');
+      return;
+    }
+
+    // Ensure `time` property is set to match the reminder (default 09:00)
+    const timeVal = (properties['time'] || '').trim();
+    if (!/^\d{1,2}:\d{2}$/.test(timeVal)) {
+      properties['time'] = '09:00';
+      renderProps();
+    }
+
+    dueEl.value = iso;
+    dueEl.dispatchEvent(new Event('change'));
+    updateDueBtnState();
+    updateReminderBadge();
+    scheduleSave();
+    flashIndicator('Reminder set', true);
+  }
+
+  function clearReminder() {
+    dueEl.value = '';
+    if (dueDateEl) dueDateEl.value = '';
+    if (dueTimeEl) dueTimeEl.value = '';
+    
+    dueEl.dispatchEvent(new Event('change'));
+    updateDueBtnState();
+    updateReminderBadge();
+    scheduleSave();
+    flashIndicator('Reminder cleared', true);
+  }
+  
+  function clearReminderSilently() {
+    dueEl.value = '';
+    if (dueDateEl) dueDateEl.value = '';
+    if (dueTimeEl) dueTimeEl.value = '';
+    dueEl.dispatchEvent(new Event('change'));
+    updateDueBtnState();
+    updateReminderBadge();
+  } 
+
+  function openPickerAndFillProps() {
+    // This is now handled by the dueDateEl change listener above
+  }
+
+  let isProgrammaticChange = false;
+
+  if (dueBtn) {
+    dueBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      
+      // 1. If there is an active reminder, clear it
+      if (dueEl.value) {
+        clearReminder();
+        return;
+      }
+
+      // 2. Look at the actual chips (not the empty input boxes)
+      let dueVal = '';
+      let timeVal = '';
+      
+      document.querySelectorAll('.prop-row').forEach(row => {
+        const keyInput = row.querySelector('.prop-key-wrap input');
+        const chips = row.querySelectorAll('.prop-chip-label');
+        
+        if (keyInput && chips.length > 0) {
+          const k = keyInput.value.trim().toLowerCase();
+          const firstChipText = chips[0].textContent.trim(); 
+          
+          if (k === 'due') dueVal = firstChipText;
+          if (k === 'time') timeVal = firstChipText;
+        }
+      });
+
+      // 3. If we have a due date...
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dueVal)) {
+        
+        // ...check if we also have a time
+        if (/^\d{1,2}:\d{2}$/.test(timeVal)) {
+          // We have both. Set it silently.
+          const finalTime = timeVal.padStart(5, '0');
+          const combined = `${dueVal}T${finalTime}`;
+          
+          if (new Date(combined) <= new Date()) {
+            alert('This time has already passed. Please pick a different date or time.');
+            return;
+          }
+
+          isProgrammaticChange = true;
+          dueEl.value = combined;
+          dueDateEl.value = dueVal;
+          dueTimeEl.value = finalTime;
+          isProgrammaticChange = false;
+
+          dueEl.dispatchEvent(new Event('change'));
+          updateDueBtnState();
+          updateReminderBadge();
+          scheduleSave();
+          flashIndicator('Reminder set', true);
+          
+        } else {
+          // We have a date, but NO time. Show the prompt to set the time!
+          isProgrammaticChange = true;
+          dueDateEl.value = dueVal;
+          dueTimeEl.value = '';
+          isProgrammaticChange = false;
+          
+          const prompt = document.getElementById('due-time-prompt');
+          if (prompt) prompt.classList.add('show');
+        }
+        
+      } else {
+        // 4. No due property at all, open the calendar
+        try { dueDateEl.showPicker(); } catch (err) { dueDateEl.click(); }
+      }
+    });
+  }
+  
+  // 2. When a date is chosen, reveal the floating prompt
+  if (dueDateEl) {
+    dueDateEl.addEventListener('change', () => {
+      if (isProgrammaticChange) return; // <--- SKIP IF PROGRAMMATIC
+      if (!dueDateEl.value) return;
+      
+      // CHECK FOR PAST DATE HERE
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // Start of today
+      
+      // Note: we add T00:00 to avoid timezone issues when parsing the date
+      const selectedDate = new Date(`${dueDateEl.value}T00:00`);
+      
+      if (selectedDate < today) {
+        alert('Reminder date cannot be in the past.');
+        dueDateEl.value = ''; // Clear the invalid date
+        return;
+      }
+      
+      // Set the `due` property to match the picked date
+      properties['due'] = dueDateEl.value;
+      renderProps();      
+      
+      // CLEAR THE OLD TIME HERE
+      if (dueTimeEl) dueTimeEl.value = ''; 
+      
+      const prompt = document.getElementById('due-time-prompt');
+      if (prompt) prompt.classList.add('show'); 
+    });
+  }
+
+  // 3a. When the user taps "Set time", open the clock
+  const reminderTimeBtn = document.getElementById('due-time-btn');
+  if (reminderTimeBtn) {
+    reminderTimeBtn.addEventListener('click', () => {
+      const prompt = document.getElementById('due-time-prompt');
+      if (prompt) prompt.classList.remove('show');
+      
+      try { dueTimeEl.showPicker(); } catch (err) { dueTimeEl.click(); }
+    });
+  }
+
+  // 3b. When the user taps "OK", default to 09:00 and save
+  const dueTimeOk = document.getElementById('due-time-ok');
+  if (dueTimeOk) {
+    // Close the "Set time" prompt when the user taps anywhere outside it
+    document.addEventListener('mousedown', (e) => {
+      const prompt = document.getElementById('due-time-prompt');
+      if (!prompt || !prompt.classList.contains('show')) return;
+      if (prompt.contains(e.target)) return;
+      if (e.target.closest && e.target.closest('#due-btn')) return;
+      prompt.classList.remove('show');
+    }, true);
+
+    document.addEventListener('touchstart', (e) => {
+      const prompt = document.getElementById('due-time-prompt');
+      if (!prompt || !prompt.classList.contains('show')) return;
+      if (prompt.contains(e.target)) return;
+      if (e.target.closest && e.target.closest('#due-btn')) return;
+      prompt.classList.remove('show');
+    }, { passive: true, capture: true });  	
+
+    dueTimeOk.addEventListener('click', () => {
+      const prompt = document.getElementById('due-time-prompt');
+      if (prompt) prompt.classList.remove('show');
+
+      dueTimeEl.value = '09:00';
+
+      const combined = `${dueDateEl.value}T09:00`;
+      if (new Date(combined) <= new Date()) {
+        alert('This time today has already passed. Please pick a different time.');
+        if (prompt) prompt.classList.add('show');
+        return;
+      }
+
+      if (dueDateEl.value) {
+        properties['due'] = dueDateEl.value;
+      }
+      properties['time'] = '09:00';
+      renderProps();
+
+      dueTimeEl.dispatchEvent(new Event('change'));
+    });
+  }
+
+  // 4. When the time is chosen, combine them and save
+  if (dueTimeEl) {
+    dueTimeEl.addEventListener('change', () => {
+      if (!dueDateEl.value) return;
+
+      if (!dueTimeEl.value) dueTimeEl.value = '09:00';
+
+      const combined = `${dueDateEl.value}T${dueTimeEl.value}`;
+
+      if (new Date(combined) <= new Date()) {
+        alert('Reminder cannot be set in the past. Please pick a different time.');
+        const prompt = document.getElementById('due-time-prompt');
+        if (prompt) prompt.classList.add('show');
+        return;
+      }
+
+      if (dueDateEl.value) {
+        properties['due'] = dueDateEl.value;
+      }
+      properties['time'] = dueTimeEl.value;
+      renderProps();
+
+      dueEl.value = combined;
+      dueEl.dispatchEvent(new Event('change'));
+      updateDueBtnState();
+      updateReminderBadge();
+      scheduleSave();
+      flashIndicator('Reminder set', true);
+    });
+  }
+
+  let acIndex = -1, acItems = [], acTrigger = null;
+  
+  // Hide autocomplete when clicking elsewhere in the editor
+  const noteContentEl = document.getElementById('note-content');
+  if (noteContentEl) {
+    noteContentEl.addEventListener('mousedown', () => {
+      if (acEl && !acEl.classList.contains('hidden')) {
+        acEl.classList.add('hidden');
+      }
+    });
+    noteContentEl.addEventListener('touchstart', () => {
+      if (acEl && !acEl.classList.contains('hidden')) {
+        acEl.classList.add('hidden');
+      }
+    });
+  }
+
+  function currentTrigger() {
+    if (!editor) return null;
+    const pos = editor.getSelection().start;
+    const before = editor.getContent().slice(0, pos);
+
+    // Match: (opener)(note title including spaces)(#)(block query)
+    //
+    // Two branches:
+    //   - Bracketed openers ([[, @[[, ![[, !@[[): allow spaces in the title.
+    //   - Bare openers (@, !@): disallow a leading space right after
+    //     the opener (so `@ ` in prose doesn't open the popup).
+    const m = before.match(
+      /(!\[\[|!@\[\[|@\[\[|\[\[)([^\]\n#]*)(?:#([^\]\n]*))?$|(!@|@)([^\s\]\n#][^\]\n#]*)(?:#([^\]\n]*))?$/
+    );
+    if (!m) return null;
+
+    const opener     = m[1] || m[4];
+    const text       = m[1] ? (m[2] || '') : (m[5] || '');
+    // blockQuery is only defined if a `#` was present.
+    const blockQuery = m[1] ? m[3] : m[6];
+
+    // For bare @ and !@, require the character before the opener to be
+    // whitespace, `(`, or start-of-string. Prevents email-like matches.
+    if (opener === '@' || opener === '!@') {
+      const hashPart = (blockQuery !== undefined) ? 1 + blockQuery.length : 0;
+      const spanLen = opener.length + text.length + hashPart;
+      const idx = before.length - spanLen;
+      if (idx > 0) {
+        const prev = before[idx - 1];
+        if (!/[\s(]/.test(prev)) return null;
+      }
+    }
+
+    const embed = opener.startsWith('!');
+    const wiki = opener.includes('[[') || opener === '@' || opener === '!@';
+
+    const hashPart = (blockQuery !== undefined) ? 1 + blockQuery.length : 0;
+    return {
+      start: pos - (opener.length + text.length + hashPart),
+      text,
+      blockQuery,
+      wiki,
+      embed,
+      opener
+    };
+  }
+  
+  let _lastBlockQuery = null;
+  let _cachedBlockNoteId = null;
+  let _cachedBlocksList = null;
+  let _resolvedBlockNoteTitle = null;              // actual title from server
+  const _blockTitleByKey = new Map();               // cacheKey → actual title
+
+  let _acSearchToken = 0;
+
+  async function checkAutocomplete() {
+    const token = ++_acSearchToken;
+
+    const trig = currentTrigger();
+    if (!trig) {
+      acEl.classList.add('hidden');
+      _cachedBlockNoteId = null;
+      _cachedBlocksList = null;
+      return;
+    }
+
+    // If there is no text after [[ or @, hide the popup
+    if (!trig.text && trig.blockQuery === undefined) {
+      acEl.classList.add('hidden');
+      return;
+    }
+
+    acTrigger = trig;
+
+    // --- BLOCK PICKER LOGIC (if user typed #) ---
+    if (trig.blockQuery !== undefined) {
+      const noteTitle = trig.text.trim();
+
+      // 1. Fetch blocks if we changed the note title (or don't have
+      //    them cached yet). We cache by note title for the session.
+      if (_cachedBlockNoteId !== noteTitle) {
+        _cachedBlockNoteId = noteTitle;
+        _cachedBlocksList = null;      // null = loading
+        _resolvedBlockNoteTitle = null; // reset
+
+        const cacheKey = noteTitle.toLowerCase();
+
+        // Resolve the note's ACTUAL title from the server. The user may
+        // have typed "paraty" (lowercase), but the note is titled
+        // "Paraty". We need the real title for the inserted wikilink
+        // so the pill renders with the correct capitalization.
+        let noteId = null;
+        let actualTitle = noteTitle;
+
+        const exactNote = acItems.find(
+          n => (n.title || '').toLowerCase() === cacheKey
+        );
+        if (exactNote) {
+          noteId = exactNote.id;
+          actualTitle = exactNote.title;
+        } else {
+          try {
+            const r = await fetch(`/api/notes?q=${encodeURIComponent(noteTitle)}&limit=1`);
+            if (token !== _acSearchToken) return;
+            const notes = await r.json();
+            if (notes.length > 0) {
+              noteId = notes[0].id;
+              actualTitle = notes[0].title;
+            }
+          } catch (e) {}
+        }
+
+        // Cache the actual title regardless of whether blocks are cached
+        if (actualTitle) {
+          _blockTitleByKey.set(cacheKey, actualTitle);
+          _resolvedBlockNoteTitle = actualTitle;
+        }
+
+        if (_blockCacheByTitle.has(cacheKey)) {
+          _cachedBlocksList = _blockCacheByTitle.get(cacheKey);
+        } else if (noteId) {
+          try {
+            const r = await fetch(`/api/note/${noteId}/blocks/search?q=`);
+            if (token !== _acSearchToken) return;
+            _cachedBlocksList = await r.json();
+            _blockCacheByTitle.set(cacheKey, _cachedBlocksList);
+          } catch (e) {
+            _cachedBlocksList = [];
+          }
+        } else {
+          _cachedBlocksList = [];
+        }
+      }
+
+      // If the user typed something else while we were fetching, abort
+      if (token !== _acSearchToken) return;
+
+      // 2. Show loading state
+      if (_cachedBlocksList === null) {
+        acEl.innerHTML = '<div class="ac-item" style="color:var(--text-faint)">Loading blocks…</div>';
+        acEl.classList.remove('hidden');
+        positionAutocomplete();
+        return;
+      }
+
+      // 3. Filter locally
+      const q = (trig.blockQuery || '').toLowerCase();
+      const filtered = _cachedBlocksList.filter(b => b.text.toLowerCase().includes(q));
+
+      if (!filtered.length) {
+        acEl.innerHTML = '<div class="ac-item" style="color:var(--text-faint)">No blocks found.</div>';
+      } else {
+        acEl.innerHTML = filtered.map((b, i) =>
+          `<div class="ac-item ${i === 0 ? 'sel' : ''}" data-block-id="${b.id}" data-block-text="${encodeURIComponent(b.text)}" data-kind="block">
+             <span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px;opacity:0.7">tag</span>
+             ${escapeHtml(b.text)}
+           </div>`
+        ).join('');
+      }
+      acEl.classList.remove('hidden');
+      positionAutocomplete();
+
+      acEl.querySelectorAll('.ac-item[data-kind="block"]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const blockId = el.dataset.blockId;
+
+          // Build the wikilink token using the note's ACTUAL title
+          // (uppercase P for "Paraty"), not the user's typed text.
+          const displayTitle = _resolvedBlockNoteTitle || trig.text;
+          let finalToken;
+          if (trig.embed) {
+            finalToken = `![[${displayTitle}#${blockId}]]`;
+          } else {
+            finalToken = `@[[${displayTitle}#${blockId}]]`;
+          }
+
+          editor.replaceRange(trig.start, editor.getSelection().start, finalToken);
+          acEl.classList.add('hidden');
+          _cachedBlockNoteId = null;
+          _cachedBlocksList = null;
+          _resolvedBlockNoteTitle = null;
+          renderPreview();
+          scheduleSave();
+        };
+      });
+      return;
+    }
+
+    // --- ORIGINAL NOTE / SEARCH AUTOCOMPLETE LOGIC ---
+    // Reset block cache when not searching blocks
+    _cachedBlockNoteId = null;
+    _cachedBlocksList = null;
+
+    const isEmbed = trig.embed;
+    // Show a placeholder immediately so the popup feels instant
+    if (!acEl.classList.contains('hidden') && acEl.querySelector('[data-kind="loading"]')) {
+      // already showing loading, nothing to do
+    } else {
+      acEl.innerHTML = '<div class="ac-item" data-kind="loading" style="color:var(--text-faint)">Loading…</div>';
+      acEl.classList.remove('hidden');
+      positionAutocomplete();
+    }
+    const [notesRes, searchesRes] = await Promise.all([
+      fetch(`/api/notes?q=${encodeURIComponent(trig.text)}`),
+      isEmbed
+        ? fetch(`/api/searches?q=${encodeURIComponent(trig.text)}&limit=10`)
+        : Promise.resolve({ json: () => [] }),
+    ]);
+
+    // CRITICAL: If the user typed a # while we were waiting for the network, abort!
+    if (token !== _acSearchToken) return;
+
+    acItems = await notesRes.json();
+
+    // Prefetch the top-scoring note's blocks so that if the user types
+    // '#' next, the block picker opens instantly instead of waiting
+    // for a round-trip.
+    if (acItems.length > 0 && acItems[0].title && acItems[0].id) {
+      const topTitle = (acItems[0].title || '').toLowerCase();
+      if (!_blockCacheByTitle.has(topTitle)) {
+        fetch(`/api/note/${acItems[0].id}/blocks/search?q=`)
+          .then(r => r.ok ? r.json() : null)
+          .then(data => { if (data) _blockCacheByTitle.set(topTitle, data); })
+          .catch(() => {});
+      }
+    }
+
+    const searches = isEmbed ? await searchesRes.json() : [];
+
+    const inputVal = (trig.text || '').trim();
+    let createOffer = null;
+    if (inputVal) {
+      const exactNote = acItems.some(n => (n.title || '').toLowerCase() === inputVal.toLowerCase());
+      const exactSearch = searches.some(s => (s.name || '').toLowerCase() === inputVal.toLowerCase());
+      if (!exactNote && !exactSearch) createOffer = inputVal;
+    }
+
+    if (!acItems.length && !searches.length && !createOffer) {
+      acEl.classList.add('hidden');
+      return;
+    }
+
+    acIndex = 0;
+    let html = '';
+    if (createOffer) {
+      html += `<div class="ac-item ac-create" data-create="1">
+                 <span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px">add</span>
+                 Create "${escapeHtml(createOffer)}"
+               </div>`;
+    }
+    html += acItems.map((n, i) => {
+      const idx = (createOffer ? 1 : 0) + i;
+      return `<div class="ac-item ${idx === 0 ? 'sel' : ''}" data-id="${n.id}" data-kind="note">${escapeHtml(n.title)}</div>`;
+    }).join('');
+    if (searches.length) {
+      html += `<div class="modal-section-label">Saved searches</div>`;
+      html += searches.map(s =>
+        `<div class="ac-item" data-search-id="${s.id}" data-search-name="${escapeHtml(s.name)}" data-kind="search">
+           <span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px;opacity:0.7">bookmark</span>
+           ${escapeHtml(s.name)}
+         </div>`
+      ).join('');
+    }
+
+    acEl.innerHTML = html;
+    acEl.classList.remove('hidden');
+    positionAutocomplete();
+
+    acEl.querySelectorAll('.ac-item').forEach(el => {
+      el.onclick = async (e) => {
+        e.preventDefault();
+
+        if (el.dataset.create) {
+          try {
+            const cr = await fetch('/note/create-by-title', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ title: inputVal })
+            });
+            const cd = await cr.json();
+            if (cd.ok && cd.id) {
+              insertLink(cd.id, cd.title);
+            }
+          } catch (err) { console.error('Create failed', err); }
+          return;
+        }
+
+        if (el.dataset.kind === 'search') {
+          const searchId = el.dataset.searchId;
+          const trig2 = acTrigger;
+          if (!trig2) return;
+          const token2 = `!@[[#${searchId}]]`;
+          editor.replaceRange(trig2.start, editor.getSelection().start, token2);
+          acEl.classList.add('hidden');
+          renderPreview();
+          scheduleSave();
+          return;
+        }
+
+        insertLink(+el.dataset.id);
+      };
+    });
+  }
+
+  function positionAutocomplete() {
+    const coords = editor.view.coordsAtPos(editor.getSelection().start);
+    if (!coords) return;
+    const popupH = acEl.offsetHeight || 200;
+    const popupW = acEl.offsetWidth  || 240;
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+    
+    let top, left;
+    if (window.matchMedia('(max-width: 720px)').matches) {
+      top = coords.top - popupH - 8;
+      if (top < 8) top = coords.bottom + 8; 
+    } else {
+      top = coords.bottom + 4;
+      if (top + popupH > vh - 12) top = Math.max(8, coords.top - popupH - 4);
+    }
+    
+    left = coords.left;
+    if (left + popupW > vw - 8) left = Math.max(8, vw - popupW - 8);
+    
+    acEl.style.top  = top + 'px';
+    acEl.style.left = left + 'px';
+  }
+  
+  // Close autocomplete when clicking anywhere outside it
+  let acJustClosed = false;
+  document.addEventListener('mousedown', (e) => {
+    if (acEl && !acEl.classList.contains('hidden') && !acEl.contains(e.target)) {
+      acJustClosed = true;
+      acEl.classList.add('hidden');
+    }
+  }, true);
+
+  // Also block touchstart so scrolling the popup doesn't dismiss it
+  document.addEventListener('touchstart', (e) => {
+    if (acEl && !acEl.classList.contains('hidden') && !acEl.contains(e.target)) {
+      acJustClosed = true;
+      acEl.classList.add('hidden');
+    }
+  }, true);
+
+  document.addEventListener('click', (e) => {
+    if (acJustClosed) {
+      e.preventDefault();
+      e.stopPropagation();
+      acJustClosed = false;
+    }
+  }, true);
+
+  let lastCapitalizedPos = -1;
+  function forceCapitalize() {
+    if (!editor) return;
+    const content = editor.getContent();
+    const sel = editor.getSelection();
+    const cursor = sel.start;
+
+    if (cursor < 1) return;
+    const i = cursor - 1;
+    const ch = content[i];
+    if (!ch) return;
+    if (ch.toLowerCase() === ch.toUpperCase()) return;
+    if (ch === ch.toUpperCase()) return;
+
+    let j = i - 1;
+    while (j >= 0 && /\s/.test(content[j]) && content[j] !== '\n') j--;
+    const charBefore = j >= 0 ? content[j] : '\n';
+    const atSentenceStart =
+      i === 0 ||
+      charBefore === '\n' ||
+      /[.!?]/.test(charBefore);
+
+    if (!atSentenceStart) return;
+    if (lastCapitalizedPos === i) return;
+
+    lastCapitalizedPos = i;
+    editor.replaceRange(i, i + 1, ch.toUpperCase());
+  }
+
+  let previewTimer;
+  let acTimer;
+  function onEditorChange() {
+    const content = editor.getContent();
+    const sel = editor.getSelection();
+    const textBeforeCursor = content.slice(0, sel.start);
+    const isTypingBlock = /(?:\[\[|@)[^\]#]+#[^\]\n]*$/.test(textBeforeCursor);
+
+    // ALWAYS clear the previous timer
+    clearTimeout(acTimer);
+    
+    // Immediately clear stale popup HTML on every input
+    acEl.innerHTML = '';
+    acEl.classList.add('hidden');    
+
+    const justOpened = /\[\[$|@$/.test(textBeforeCursor);
+    if (isTypingBlock || justOpened) {
+      clearTimeout(acTimer);
+      checkAutocomplete();
+    } else {
+      clearTimeout(acTimer);
+      acTimer = setTimeout(checkAutocomplete, 50);
+    }
+
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(renderPreview, 120);
+    scheduleSave();
+    
+    const hint = document.getElementById('editor-hint');
+    if (hint) {
+      if (content.trim() !== '') hint.remove();
+    }
+    forceCapitalize();
+  }
+  function onEditorFocus() {}
+
+  function insertLink(id, explicitTitle) {
+    const note = explicitTitle
+      ? { id, title: explicitTitle }
+      : acItems.find(n => n.id === id);
+    const trig = acTrigger;
+    if (!note || !trig) return;
+    let token;
+    if (trig.embed) {
+      token = `![[${note.title}]]`;
+    } else if (trig.wiki) {
+      token = `[[${note.title}]]`;
+    } else {
+      token = `@[[${note.title}]]`;
+    }
+    editor.replaceRange(trig.start, editor.getSelection().start, token);
+    linkIds.add(id);
+    acEl.classList.add('hidden');
+    renderPreview();
+    scheduleSave();
+  }
+
+  function insertAtCursor(text) {
+    if (!editor) return;
+    editor.insertAtCursor(text);
+  }
+
+  let saveTimer = null, isSaving = false, pendingSave = false;
+  let saveInFlight = null;   // Promise that resolves when the current save finishes
+
+  function flashIndicator(text, ok = true) {
+    if (!saveIndicator) return;
+    saveIndicator.textContent = text;
+    saveIndicator.classList.add('show');
+    saveIndicator.style.color = ok ? 'var(--accent)' : 'var(--danger)';
+    setTimeout(() => saveIndicator.classList.remove('show'), 1600);
+  }
+
+  async function doSave() {
+    if (!editor) return;
+
+    if (String(window.NOTE_ID).startsWith('search-')) return;
+
+    if (isSaving) { pendingSave = true; return; }
+    isSaving = true;
+
+    // Track the in-flight save so __forceSave() can await it and
+    // avoid firing a second concurrent POST with the same
+    // _client_updated_at (which the server would 409 → reload).
+    let resolveSave;
+    saveInFlight = new Promise((resolve) => { resolveSave = resolve; });
+
+    flashIndicator('Saving…', true);
+
+    if (sweepEmptyProperties()) {
+      renderProps();
+    }
+
+    const cleanProps = {};
+    for (const [k, v] of Object.entries(properties)) {
+      if (isPlaceholderKey(k) && !v) continue;
+      cleanProps[k] = v;
+    }
+
+    if ('status' in cleanProps) {
+      const s = cleanProps['status'];
+      delete cleanProps['status'];
+      cleanProps['status'] = s;
+    }
+
+    const payload = {
+      title: titleEl.value,
+      content: editor.getContent(),
+      properties: cleanProps,
+      due_at: localInputToUtc(dueEl.value),
+      link_ids: [...linkIds],
+      _client_updated_at: window.NOTE_UPDATED_AT || '',
+      _client_id: CLIENT_ID,
+      _is_unloading: false,
+    };
+
+    try {
+      const r = await fetch(`/note/${window.NOTE_ID}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (r.status === 409) {
+        flashIndicator('Note changed externally — refreshing', false);
+        setTimeout(() => location.reload(), 800);
+        isSaving = false;
+        resolveSave();
+        saveInFlight = null;
+        return;
+      }
+
+      if (!r.ok) throw new Error('save failed');
+
+      const result = await r.json();
+      if (result.updated_at) {
+        window.NOTE_UPDATED_AT = result.updated_at;
+      }
+
+      if (result.properties_changed) {
+        refreshAdvancedSearchDropdowns().catch(() => {});
+      }
+
+      updateTaskButtons();
+      // Do NOT invalidate the block cache here — scheduleBlockFetch()
+      // already diffs the fetched blocks against the cached ones and
+      // re-renders only if they differ. Invalidating first would make
+      // getCachedBlocks() return null for ~600 ms, during which
+      // openBlockMenu() silently bails (block not found in cache).
+      if (typeof scheduleBlockFetch === 'function') scheduleBlockFetch();
+      flashIndicator('Saved', true);
+      document.querySelectorAll(`.tree-link[data-note-id="${window.NOTE_ID}"]`).forEach(a => {
+        const label = a.querySelector('.tree-label');
+        if (label) label.textContent = titleEl.value;
+        const btn = a.querySelector('[data-action="rename-note"]');
+        if (btn) btn.dataset.current = titleEl.value;
+      });
+
+      const layoutEl = document.querySelector('.layout');
+      if (layoutEl && !layoutEl.classList.contains('collapsed') &&
+          typeof window.__refreshTree === 'function') {
+        clearTimeout(window.__treeRefreshTimer);
+        window.__treeRefreshTimer = setTimeout(() => {
+          window.__refreshTree();
+        }, 800);
+      }
+    } catch (err) {
+      flashIndicator('Save failed', false);
+    } finally {
+      isSaving = false;
+      resolveSave();
+      saveInFlight = null;
+      if (pendingSave) { pendingSave = false; doSave(); }
+    }
+  }
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(doSave, 300);
+  }
+  window.__forceSave = async function(newContent) {
+    if (!editor) return;
+    if (String(window.NOTE_ID).startsWith('search-')) return;
+
+    // If a save is already in flight, wait for it to finish before
+    // firing ours. Otherwise both requests carry the same
+    // _client_updated_at and the server 409s the second one → reload.
+    if (saveInFlight) {
+      try { await saveInFlight; } catch (e) {}
+    }
+
+    // Cancel any pending debounced save — __forceSave is going to
+    // send the current content immediately, so the scheduled save
+    // would only race us and send a stale updated_at.
+    clearTimeout(saveTimer);
+    saveTimer = null;
+
+    if (sweepEmptyProperties()) renderProps();
+
+    const cleanProps = {};
+    for (const [k, v] of Object.entries(properties)) {
+      if (isPlaceholderKey(k) && !v) continue;
+      cleanProps[k] = v;
+    }
+    if ('status' in cleanProps) {
+      const s = cleanProps['status'];
+      delete cleanProps['status'];
+      cleanProps['status'] = s;
+    }
+
+    const payload = {
+      title: titleEl.value,
+      content: newContent,
+      properties: cleanProps,
+      due_at: localInputToUtc(dueEl.value),
+      link_ids: [...linkIds],
+      _client_updated_at: window.NOTE_UPDATED_AT || '',
+      _client_id: CLIENT_ID,
+    };
+
+    flashIndicator('Saving…', true);
+
+    try {
+      const r = await fetch(`/note/${window.NOTE_ID}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (r.status === 409) {
+        flashIndicator('Note changed externally — refreshing', false);
+        setTimeout(() => location.reload(), 800);
+        return;
+      }
+      if (!r.ok) throw new Error('save failed');
+
+      const result = await r.json();
+      if (result && result.updated_at) {
+        window.NOTE_UPDATED_AT = result.updated_at;
+      }
+      flashIndicator('Saved', true);
+    } catch (err) {
+      flashIndicator('Save failed', false);
+      console.log('Save error:', err);
+    }
+  };
+  window.__flushSave = doSave;
+  window.__savePending = () => (!!saveTimer) || isSaving;
+
+  titleEl.addEventListener('blur', doSave);
+  titleEl.addEventListener('input', scheduleSave);
+
+  titleEl.addEventListener('input', () => {
+    const v = titleEl.value;
+    if (v && v[0] !== v[0].toUpperCase()) {
+      titleEl.value = v[0].toUpperCase() + v.slice(1);
+    }
+  });
+
+  if (dueEl) {
+    dueEl.addEventListener('change', () => {
+      updateDueBtnState();
+      updateReminderBadge();
+      scheduleSave();
+    });
+  }
+
+  window.addEventListener('beforeunload', () => {
+    if (!editor) return;
+    if (String(window.NOTE_ID).startsWith('search-')) return;
+    
+    // Always save on unload to catch any pending changes
+    const cleanProps = {};
+    for (const [k, v] of Object.entries(properties)) {
+      if (isPlaceholderKey(k) && !v) continue;
+      cleanProps[k] = v;
+    }
+    if ('status' in cleanProps) {
+      const s = cleanProps['status'];
+      delete cleanProps['status'];
+      cleanProps['status'] = s;
+    }
+    
+    const payload = {
+      title: titleEl.value,
+      content: editor.getContent(),
+      properties: cleanProps,
+      due_at: localInputToUtc(dueEl.value),
+      link_ids: [...linkIds],
+      _client_updated_at: window.NOTE_UPDATED_AT || '',
+      _client_id: CLIENT_ID,
+      _is_unloading: true, // <--- ADD THIS
+    };
+    
+    try {
+      fetch(`/note/${window.NOTE_ID}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true,
+      });
+    } catch (e) {}
+  });
+
+  window.addEventListener('pagehide', () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      doSave();
+    }
+  });
+
+  // Flush any pending save when the page is about to be hidden (e.g. swipe-back)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      doSave();
+    }
+  });
+
+  $('#save-btn').addEventListener('click', doSave);
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      doSave();
+    }
+  });
+  
+  const undoBtn = $('#undo-btn');
+  if (undoBtn) {
+    undoBtn.addEventListener('click', () => {
+      if (editor && typeof editor.undo === 'function') {
+        editor.undo();
+      }
+    });
+  }
+
+  const redoBtn = $('#redo-btn');
+  if (redoBtn) {
+    redoBtn.addEventListener('click', () => {
+      if (editor && typeof editor.redo === 'function') {
+        editor.redo();
+      }
+    });
+  }  
+
+$('#delete-btn')?.addEventListener('click', async () => {
+  if (!confirm('Delete this note?')) return;
+
+  const currentId = String(window.NOTE_ID);
+
+  // If we are currently in a saved search, just reload the search page.
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.has('search') || urlParams.has('q') || urlParams.has('prop_key')) {
+    urlParams.delete('note');
+    removeNoteFromTabs(window.NOTE_ID);
+    removeNoteFromRecent(window.NOTE_ID);
+    await fetch(`/note/${window.NOTE_ID}/delete`, { method: 'POST' });
+    location.href = '/?' + urlParams.toString();
+    return;
+  }
+
+  // Pick the destination to open after deletion, in priority order:
+  //   1. The note the user was looking at before this one (session history)
+  //   2. The previous/next tab in the tab bar (if the deleted note is a tab root)
+  //   3. Root
+  let dest = null;
+
+  // 1. Session history
+  try {
+    const prev = sessionStorage.getItem('prev-note-id');
+    if (prev && String(prev) !== currentId) {
+      dest = `/?note=${prev}`;
+    }
+  } catch (e) {}
+
+  // 2. Tab bar fallback
+  if (!dest) {
+    try {
+      const tabs = JSON.parse(localStorage.getItem('open-tabs') || '[]');
+      const idx = tabs.findIndex(t => String(t.id) === currentId);
+      if (idx > 0) {
+        dest = `/?note=${tabs[idx - 1].id}`;
+      } else if (idx === 0 && tabs.length > 1) {
+        dest = `/?note=${tabs[idx + 1].id}`;
+      }
+    } catch (e) {}
+  }
+
+  // 3. Root
+  if (!dest) {
+    dest = window.ROOT_ID ? `/?note=${window.ROOT_ID}` : '/';
+  }
+
+  removeNoteFromTabs(window.NOTE_ID);
+  removeNoteFromRecent(window.NOTE_ID);
+  await fetch(`/note/${window.NOTE_ID}/delete`, { method: 'POST' });
+  location.href = dest;
+});
+
+  const attachLabel = $('#attach-btn');
+  if (attachLabel) {
+    attachLabel.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+  }
+
+  let attachWasEditing = false;
+  const attachBtn = $('#attach-btn');
+  if (attachBtn) {
+    attachBtn.addEventListener('mousedown', () => {
+      attachWasEditing = !!(editor && editor.view && editor.view.hasFocus);
+    });
+  }
+  
+  // ─── Chunked upload helper ──────────────────────────────────────────
+  // Splits a file into 2 MB chunks and uploads them sequentially.
+  // Returns the server's attachment info in the same shape as a
+  // single-POST upload.
+  async function uploadFileChunked(file, noteId, onProgress) {
+    const CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    const uploadId = ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+      (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+    );
+
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const chunk = file.slice(start, end);
+
+      const fd = new FormData();
+      fd.append('upload_id', uploadId);
+      fd.append('chunk_index', String(i));
+      fd.append('total_chunks', String(totalChunks));
+      fd.append('filename', file.name);
+      fd.append('mimetype', file.type || 'application/octet-stream');
+      fd.append('chunk', chunk, file.name + '.part' + i);
+
+      // Retry each chunk up to 3 times
+      let attempts = 0;
+      while (attempts < 3) {
+        try {
+          const r = await fetch('/upload/chunk', {
+            method: 'POST',
+            body: fd,
+          });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          break;
+        } catch (err) {
+          attempts++;
+          if (attempts >= 3) throw new Error('Chunk ' + i + ' failed: ' + err.message);
+          // wait 1 second before retry
+          await new Promise(res => setTimeout(res, 1000));
+        }
+      }
+
+      if (typeof onProgress === 'function') {
+        onProgress(i + 1, totalChunks);
+      }
+    }
+
+    // All chunks uploaded — finalize
+    const r = await fetch('/upload/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upload_id: uploadId,
+        filename: file.name,
+        mimetype: file.type || 'application/octet-stream',
+        total_chunks: totalChunks,
+        note_id: noteId,
+      }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || 'finalize failed');
+    }
+    return await r.json();
+  }  
+
+  $('#file-input').addEventListener('change', async (e) => {
+    const files = [...e.target.files];
+    if (!files.length) return;
+    e.target.value = '';
+
+    const grid = $('#attachment-grid');
+
+    for (const file of files) {
+      const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+      const isSmall = file.size < 5 * 1024 * 1024; // < 5 MB: use single POST
+
+      let f;
+      try {
+        if (isSmall) {
+          // Fast path: single POST (unchanged behavior)
+          const fd = new FormData();
+          fd.append('file', file);
+          const r = await fetch(`/note/${window.NOTE_ID}/upload`, {
+            method: 'POST',
+            body: fd,
+          });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const data = await r.json();
+          f = data.files && data.files[0];
+        } else {
+          // Chunked path — show percentage only (no filename to truncate)
+          flashIndicator('Uploading… 0%', true);
+          f = await uploadFileChunked(
+            file,
+            window.NOTE_ID,
+            (done, total) => {
+              const pct = Math.round((done / total) * 100);
+              flashIndicator(`Uploading… ${pct}%`, true);
+            }
+          );
+        }
+      } catch (err) {
+        alert(`Upload failed for ${file.name} (${sizeMB} MB): ${err.message}`);
+        continue;
+      }
+
+      if (!f) continue;
+
+      // Add the tile to the drawer (if visible)
+      if (grid) {
+        const div = document.createElement('div');
+        div.className = 'att';
+        div.dataset.id = f.id;
+        div.innerHTML = f.is_image
+          ? `<img src="${f.url}" alt="${escapeHtml(f.name)}"><button class="att-del" data-id="${f.id}"><span class="material-symbols-rounded">close</span></button>`
+          : `<a href="${f.url}" target="_blank"><span class="material-symbols-rounded">draft</span>${escapeHtml(f.name)}</a><button class="att-del" data-id="${f.id}"><span class="material-symbols-rounded">close</span></button>`;
+        grid.appendChild(div);
+      }
+
+      // Insert the markdown snippet into the note body
+      if (editor) {
+        const snippet = f.is_image ? `![${f.name}](${f.url})\n\n` : `[${f.name}](${f.url})\n\n`;
+        if (typeof editor.insertSmart === 'function') {
+          editor.insertSmart(snippet, attachWasEditing);
+        } else {
+          insertAtCursor(snippet);
+        }
+      }
+    }
+
+    if (editor) {
+      renderPreview();
+      scheduleSave();
+    }
+    flashIndicator('Attached', true);
+  });
+
+  document.addEventListener('click', async (e) => {
+    const del = e.target.closest('.att-del');
+    if (del) {
+      const id = del.dataset.id;
+      if (!confirm('Delete attachment?')) return;
+      
+      const tile = del.closest('.att');
+      const res = await fetch(`/attachment/${id}/delete`, { method: 'POST' });
+      if (!res.ok) { alert('Delete failed'); return; }
+      
+      if (tile) tile.remove();
+      
+      // Fetch the updated note content to remove the markdown link
+      const noteRes = await fetch(`/api/notes/by-title/${encodeURIComponent(titleEl.value)}`);
+      if (noteRes.ok) {
+        const fresh = await noteRes.json();
+        if (editor && typeof fresh.content === 'string') {
+          editor.setContent(fresh.content);
+          renderPreview();
+          if (typeof window.__forceSave === 'function') {
+            window.__forceSave(fresh.content);
+          }
+        }
+      }
+    }
+  });
+  
+  // Attachment rename handler
+  document.addEventListener('click', async (e) => {
+    const renameBtn = e.target.closest('.att-rename');
+    if (!renameBtn) return;
+
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    const id = renameBtn.dataset.id;
+    const current = renameBtn.dataset.current || '';
+    const tile = renameBtn.closest('.att');
+
+    const newName = prompt('Rename attachment:', current);
+    if (!newName || !newName.trim() || newName.trim() === current) return;
+
+    try {
+      const res = await fetch(`/attachment/${id}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName.trim() }),
+        cache: 'no-store',
+      });
+      if (!res.ok) {
+        alert('Rename failed.');
+        return;
+      }
+      const data = await res.json();
+      const updatedName = data.name || newName.trim();
+
+      // Update the DOM in place
+      if (tile) {
+        renameBtn.dataset.current = updatedName;
+        
+        // Update data-filename on the tile and the delete button
+        if (data.filename) {
+          tile.dataset.filename = data.filename;
+          const delBtn = tile.querySelector('.att-del');
+          if (delBtn) delBtn.dataset.filename = data.filename;
+        }
+
+        const nameEl = tile.querySelector('.att-name');
+        if (nameEl) nameEl.textContent = updatedName;
+        const img = tile.querySelector('img');
+        if (img) img.alt = updatedName;
+        const trackNameEl = tile.querySelector('.att-track-name');
+        if (trackNameEl) trackNameEl.textContent = updatedName;
+        
+        // If it's an image, update the thumbnail src to the new path
+        if (img && data.filename) {
+          img.src = `/uploads/${data.filename}`;
+        }
+      }
+
+      // Update the editor content if it was changed server-side
+      if (editor && typeof data.content === 'string' && data.content) {
+        editor.setContent(data.content);
+        renderPreview();
+        if (typeof window.__forceSave === 'function') {
+          window.__forceSave(data.content);
+        } else {
+          scheduleSave();
+        }
+      }
+    } catch (err) {
+      alert('Rename failed: ' + err.message);
+    }
+  }, true);   // capture phase, same as .att-del  
+
+  const drawerStack = $('#drawer-stack');
+  const backdrop    = $('#drawer-backdrop');
+  const closeGrip   = $('#drawer-close');
+  const toggleDrawersBtn = $('#toggle-drawers');
+
+  function isMobile() {
+    return window.matchMedia('(max-width: 720px)').matches;
+  }
+
+  function setDrawerHeight(px) {
+    document.documentElement.style.setProperty('--drawer-height', px + 'px');
+  }
+
+  function measureDrawerHeight() {
+    if (!drawerStack || !isMobile() || !drawerStack.classList.contains('open')) {
+      setDrawerHeight(0);
+      return;
+    }
+    const h = drawerStack.getBoundingClientRect().height;
+    setDrawerHeight(h);
+  }
+
+  function openDrawer(whichId) {
+    if (!drawerStack) return;
+    drawerStack.querySelectorAll('details').forEach(d => { d.open = (d.id === whichId); });
+    drawerStack.classList.add('open');
+    if (layout) layout.classList.add('drawer-open');
+    setTimeout(measureDrawerHeight, 260);
+  }
+  function closeDrawer() {
+    if (!drawerStack) return;
+    drawerStack.classList.remove('open');
+    if (layout) layout.classList.remove('drawer-open');
+    setDrawerHeight(0);
+  }
+
+  if (toggleDrawersBtn) {
+    toggleDrawersBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (drawerStack.classList.contains('open')) {
+        closeDrawer();
+      } else {
+        // --- NEW: Fill in the metadata dates ---
+        const createdEl = document.getElementById('meta-created');
+        const updatedEl = document.getElementById('meta-updated');
+        
+        // Use window globals to get the dates (we pass them from the template)
+        if (createdEl && window.NOTE_CREATED_AT) {
+          const d = new Date(window.NOTE_CREATED_AT);
+          createdEl.textContent = d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+        }
+        if (updatedEl && window.NOTE_UPDATED_AT) {
+          const d = new Date(window.NOTE_UPDATED_AT);
+          updatedEl.textContent = d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+        }
+
+        const bl = document.getElementById('backlinks-drawer');
+        const at = document.getElementById('attach-drawer');
+        let which = 'backlinks-drawer';
+        if (bl && at) {
+          const blHas = bl.querySelector('.backlinks-list');
+          const atHas = at.querySelector('.attachment-grid .att');
+          if (!blHas && atHas) which = 'attach-drawer';
+        }
+        openDrawer(which);
+      }
+    });
+  }
+
+  if (backdrop) backdrop.addEventListener('click', closeDrawer);
+  if (closeGrip) closeGrip.addEventListener('click', closeDrawer);
+  window.addEventListener('resize', measureDrawerHeight);
+
+  // Map notes have no CodeMirror editor and no code path below this point is
+  // relevant to them (live-poll, focus handling, in-note search, scroll
+  // restoration all assume a text editor). Everything above — props strip,
+  // action-bar handlers, tab system, outline init — is fully wired and works
+  // fine on map notes. Bail out only here.
+  if (window.IS_MAP_NOTE) {
+    return;
+  }
+
+  const initial = editorHost.getAttribute('data-initial') || '';
+  editor = createEditor(editorHost, initial, onEditorChange, onEditorFocus);
+
+  // ── Keep the cursor visible when typing near the bottom of the screen ──
+  // CodeMirror auto-scrolls its own `.cm-scroller` on typing, but in this
+  // layout `.cm-scroller` has `overflow: visible; height: auto` (see the
+  // .note-flow rules in style.css), so the actual scrolling happens on the
+  // ancestor `.editor-main.scroll-pane`. CodeMirror doesn't know about
+  // that container, so we scroll it ourselves whenever the cursor moves.
+  (function () {
+    if (!editor || !editor.view) return;
+    const scroller = document.querySelector('.editor-main.scroll-pane');
+    if (!scroller) return;
+
+    const KEYBOARD_MARGIN = 80;   // px gap above the keyboard edge
+    const TOP_MARGIN = 40;        // px gap below the top of the viewport
+
+    function vvTop() {
+      return window.visualViewport ? window.visualViewport.offsetTop : 0;
+    }
+    function vvBottom() {
+      if (window.visualViewport) {
+        return window.visualViewport.height + window.visualViewport.offsetTop;
+      }
+      return window.innerHeight;
+    }
+
+    function ensureCursorVisible() {
+      if (!editor || !editor.view) return;
+      if (!editor.view.hasFocus) return;
+      if (!window.matchMedia('(max-width: 720px)').matches) return;
+
+      let coords;
+      try {
+        const pos = editor.view.state.selection.main.head;
+        coords = editor.view.coordsAtPos(pos);
+      } catch (e) { return; }
+      if (!coords) return;
+
+      const cursorTop = coords.top;
+      const cursorBottom = coords.bottom;
+      const minTop = vvTop() + TOP_MARGIN;
+      const maxBottom = vvBottom() - KEYBOARD_MARGIN;
+
+      if (cursorBottom > maxBottom) {
+        scroller.scrollTop += (cursorBottom - maxBottom);
+      } else if (cursorTop < minTop) {
+        scroller.scrollTop -= (minTop - cursorTop);
+      }
+    }
+
+    const contentDom = editor.view.contentDOM;
+    if (contentDom) {
+      let pending = false;
+      const requestScroll = () => {
+        if (pending) return;
+        pending = true;
+        requestAnimationFrame(() => {
+          pending = false;
+          ensureCursorVisible();
+        });
+      };
+      contentDom.addEventListener('input', requestScroll);
+      contentDom.addEventListener('keyup', requestScroll);
+      contentDom.addEventListener('compositionend', requestScroll);
+      contentDom.addEventListener('pointerup', requestScroll);
+    }
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', () => {
+        setTimeout(ensureCursorVisible, 150);
+      });
+      window.visualViewport.addEventListener('scroll', () => {
+        ensureCursorVisible();
+      });
+    }
+
+    window.__ensureCursorVisible = ensureCursorVisible;
+  })();
+
+  window.__createEditor = createEditor;
+  
+  // ---------- Live-refresh when the note changes externally ----------
+  (function () {
+    let lastSeen = null;
+    const pollInterval = 5000;
+
+    window.__resetLivePoll = () => { lastSeen = null; };
+
+    function userIsEditing() {
+      const a = document.activeElement;
+      if (!a) return false;
+      if (a === titleEl) return true;
+      if (a.closest && a.closest('#note-content')) return true;
+      if (a.closest && a.closest('.props-strip')) return true;
+      const tag = a.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return true;
+      if (a.isContentEditable) return true;
+      return false;
+    }
+
+    async function poll() {
+      try {
+        const r = await fetch(`/api/note/${window.NOTE_ID}/last-change`, { cache: 'no-store' });
+        if (!r.ok) return;
+        const data = await r.json();
+        const ts = data.ts || 0;
+
+        if (lastSeen === null) {
+          lastSeen = ts;
+          return;
+        }
+
+        if (ts > lastSeen) {
+          const changeClient = data.client || '';
+          if (changeClient === CLIENT_ID) {
+            // Our own save — just advance lastSeen.
+            lastSeen = ts;
+            return;
+          }
+
+          if (typeof window.__savePending === 'function' && window.__savePending()) {
+            return;   // retry next tick
+          }
+          if (isSaving) {
+            return;   // retry next tick
+          }
+
+          if (userIsEditing()) {
+            return;   // retry next tick
+          }
+
+          lastSeen = ts;
+          location.reload();
+        }
+      } catch (e) {
+        // silent — network hiccups shouldn't break the poll loop
+      }
+    }
+
+    setInterval(poll, pollInterval);
+    poll();
+  })();
+
+  window.__reloadEditorContent = function (newContent) {
+    if (!editor || typeof newContent !== 'string') return;
+    editor.setContent(newContent);
+    renderPreview();
+  };
+
+  const params = new URLSearchParams(location.search);
+  const focusTarget = params.get('focus');
+  const noFocus = params.get('nofocus') === '1';
+
+  if (focusTarget === 'title') {
+    setTimeout(() => {
+      titleEl.focus();
+      const len = titleEl.value.length;
+      titleEl.setSelectionRange(len, len);
+    }, 60);
+  } else if (noFocus) {
+    // skip
+  } else if (window.matchMedia('(max-width: 720px)').matches) {
+    setTimeout(() => { if (editor) editor.focus(); }, 350);
+  } else {
+    editor.focus();
+  }
+
+  // Initial block fetch (cache is empty; first renderPreview will show
+  // a spinner briefly then fill in)
+  fetchBlocks().then(() => {
+    renderPreview();
+  });
+  updatePreviewBtn();
+  updateDueBtnState();
+  updateReminderBadge();
+
+  // ---------- In-Note Search ----------
+  (function () {
+    const searchBtn = document.getElementById('note-search-btn');
+    const searchBar = document.getElementById('note-search-bar');
+    const searchInput = document.getElementById('note-search-input');
+    const closeBtn = document.getElementById('note-search-close');
+    if (!searchBtn || !searchBar || !searchInput) return;
+
+    let wasInPreviewMode = false;
+
+    function openSearch() {
+      // Remember if we were in preview mode before forcing the split view
+      wasInPreviewMode = !bodyEl.classList.contains('split');
+
+      searchBar.classList.remove('hidden');
+      if (bodyEl && !bodyEl.classList.contains('split')) {
+        bodyEl.classList.add('split');
+        updatePreviewBtn();
+      }
+      setTimeout(() => searchInput.focus(), 60);
+    }
+
+    function closeSearch() {
+      searchBar.classList.add('hidden');
+      searchInput.value = '';
+      if (window.CSS && CSS.highlights) {
+        CSS.highlights.delete('note-search');
+      }
+      
+      // Restore the mode we were in before opening the search
+      if (bodyEl) {
+        if (wasInPreviewMode) {
+          // Stay in split (preview) mode
+          bodyEl.classList.add('split');
+        } else {
+          // Go back to edit mode
+          bodyEl.classList.remove('split');
+        }
+        updatePreviewBtn();
+      }
+    }
+
+    searchBtn.addEventListener('click', openSearch);
+    closeBtn.addEventListener('click', closeSearch);
+
+    function runSearch() {
+      const query = searchInput.value.trim();
+      if (!query || !previewEl) return;
+      if (!window.CSS || !CSS.highlights) return;
+
+      CSS.highlights.delete('note-search');
+
+      const ranges = [];
+      const lowerQuery = query.toLowerCase();
+
+      const walkers = [];
+      walkers.push(document.createTreeWalker(previewEl, NodeFilter.SHOW_TEXT));
+
+      const outlineWrap = document.querySelector('.outline-wrap');
+      if (outlineWrap) {
+        walkers.push(document.createTreeWalker(outlineWrap, NodeFilter.SHOW_TEXT));
+      }
+
+      walkers.forEach(walker => {
+        let node;
+        while ((node = walker.nextNode())) {
+          const text = node.textContent;
+          const lowerText = text.toLowerCase();
+          let idx = lowerText.indexOf(lowerQuery);
+          while (idx !== -1) {
+            const range = new Range();
+            range.setStart(node, idx);
+            range.setEnd(node, idx + query.length);
+            ranges.push(range);
+            idx = lowerText.indexOf(lowerQuery, idx + 1);
+          }
+        }
+      });
+
+      if (ranges.length > 0) {
+        const hl = new Highlight(...ranges);
+        CSS.highlights.set('note-search', hl);
+        
+        // Removed the scroll — scrolling while typing dismisses the mobile keyboard
+        
+        searchInput.style.color = '';
+      } else {
+        searchInput.style.color = 'var(--danger)';
+        setTimeout(() => { searchInput.style.color = ''; }, 500);
+      }
+    }
+
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        runSearch();
+        // REMOVED: searchInput.blur() — let the keyboard stay open
+      } else if (e.key === 'Escape') {
+        closeSearch();
+      }
+    });
+
+    let searchDebounceTimer = null;
+    searchInput.addEventListener('input', () => {
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => {
+        if (searchInput.value.trim()) {
+          runSearch();
+          // Force focus back after the highlight is applied
+          searchInput.focus();
+        }
+      }, 400); // Wait 400ms after they stop typing
+    });
+  })();
+
+  // ---------- Force refresh on back navigation ----------
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted) {
+      // Page was restored from bfcache — force a fresh load to reflect any
+      // server-side changes (deletes, moves, etc.) that happened since.
+      window.location.reload();
+    }
+  }); 
+
+  // ---------- Preserve scroll position on outline navigation ----------
+  window.addEventListener('beforeunload', () => {
+    const scroller = document.querySelector('.editor-main.scroll-pane');
+    if (scroller) {
+      try {
+        sessionStorage.setItem('outline_scroll_' + window.NOTE_ID, String(scroller.scrollTop));
+      } catch (e) {}
+    }
+  });
+
+  function restoreScrollPosition() {
+    const scroller = document.querySelector('.editor-main.scroll-pane');
+    if (!scroller) return;
+    
+    try {
+      const saved = sessionStorage.getItem('outline_scroll_' + window.NOTE_ID);
+      if (saved !== null) {
+        const pos = parseInt(saved, 10);
+        if (!isNaN(pos) && pos > 0) {
+          setTimeout(() => {
+            scroller.scrollTop = pos;
+          }, 200);
+        }
+      }
+    } catch (e) {}
+  }
+
+  restoreScrollPosition();
+
+  window.addEventListener('pageshow', (e) => {
+    if (e.persisted) {
+      restoreScrollPosition();
+    }
+  });
+  // Force outline refresh when returning to the page
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      if (typeof window.__refreshOutline === 'function') {
+        window.__refreshOutline();
+      }
+    }
+  });
+
+  // --- Hide top bars on scroll down (mobile only) ---
+  let lastScrollY = 0;
+  let isTicking = false;
+
+  document.addEventListener('DOMContentLoaded', () => {
+    document.body.classList.remove('hide-top-bars');
+  });
+
+  document.addEventListener('scroll', (e) => {
+    if (!window.matchMedia('(max-width: 720px)').matches) return;
+    
+    const target = e.target;
+    // If we are scrolling inside the main editor area
+    if (!target || !target.closest || !target.closest('.editor')) return;
+
+    if (!isTicking) {
+      window.requestAnimationFrame(() => {
+        const currentScrollY = target.scrollTop;
+        
+        // If we scroll down more than 30px, hide.
+        if (currentScrollY > lastScrollY && currentScrollY > 30) {
+          document.body.classList.add('hide-top-bars');
+        } 
+        // If we scroll up, show.
+        else if (currentScrollY < lastScrollY || currentScrollY < 20) {
+          document.body.classList.remove('hide-top-bars');
+        }
+        
+        lastScrollY = currentScrollY;
+        isTicking = false;
+      });
+      isTicking = true;
+    }
+  }, true);
+  // --- Dynamic Task Buttons ---
+  function updateTaskButtons() {
+    const catProp = properties['category'] || '';
+    const isTask = String(catProp).toLowerCase().includes('tasks');
+    
+    const existingAddBtn = document.getElementById('add-subtask-btn');
+    const existingMakeBtn = document.getElementById('make-subtask-btn');
+    
+    if (isTask && !existingAddBtn) {
+      const goToParentBtn = document.getElementById('go-to-parent-btn');
+      if (goToParentBtn) {
+        // 1. Create Add Subtask Button
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'icon-btn';
+        addBtn.id = 'add-subtask-btn';
+        addBtn.title = 'Add a new subtask (from Task template)';
+        addBtn.innerHTML = '<span class="material-symbols-rounded">playlist_add</span>';
+        goToParentBtn.after(addBtn);
+        
+        addBtn.addEventListener('click', async () => {
+          if (typeof window.__savePending === 'function' && window.__savePending()) {
+            try { await window.__flushSave(); } catch (e) {}
+          }
+          try {
+            const r = await fetch('/api/note/create-task', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ parent_id: window.NOTE_ID })
+            });
+            const data = await r.json();
+            if (data.ok && data.id) location.href = `/?note=${data.id}`;
+            else alert(data.error || 'Failed');
+          } catch (err) { alert('Error: ' + err.message); }
+        });
+
+        // 2. Create Make Subtask Button
+        const makeBtn = document.createElement('button');
+        makeBtn.type = 'button';
+        makeBtn.className = 'icon-btn';
+        makeBtn.id = 'make-subtask-btn';
+        makeBtn.title = 'Make this note a subtask of...';
+        makeBtn.innerHTML = '<span class="material-symbols-rounded">input</span>';
+        addBtn.after(makeBtn);
+
+        makeBtn.addEventListener('click', () => {
+          // Trigger the existing picker logic
+          if (typeof window.__openMakeSubtaskPicker === 'function') {
+            window.__openMakeSubtaskPicker();
+          } else {
+            // Fallback: trigger the original button if it exists in the DOM
+            const originalBtn = document.getElementById('make-subtask-btn-original');
+            if (originalBtn) originalBtn.click();
+          }
+        });
+      }
+    } else if (!isTask && existingAddBtn) {
+      existingAddBtn.remove();
+      if (existingMakeBtn) existingMakeBtn.remove();
+    }
+  }  
+
+  // ============================================================
+  // Overlay autocomplete factory
+  // ============================================================
+  // A self-contained autocomplete that can be attached to any
+  // CodeMirror editor (the main note editor keeps its own existing
+  // inline autocomplete; this factory is used by the block-edit /
+  // block-add overlay modal).
+  //
+  // Triggers on: `@`, `@[[`, `[[`, `!@`, `!@[[`, `![[`, plus `#`
+  // after a note title to open the block picker.
+  //
+  // Fetches:
+  //   /api/notes?q=...                    (note search)
+  //   /api/note/<id>/blocks/search?q=     (block search)
+  //   /note/create-by-title               (create-on-the-fly)
+  //
+  // The caller provides:
+  //   editor    — a CodeMirror instance from createEditor()
+  //   popupEl   — a DOM element for the popup (created by the caller)
+  //   onInsert  — called with (tokenText, linkIdOrNull) when a token
+  //               is picked. The caller inserts it into the editor and
+  //               does whatever else it needs (save, refresh, etc.)
+  //
+  // Returns: { close(), destroy() }
+  function createOverlayAutocomplete({ editor, popupEl, onInsert }) {
+    if (!editor || !popupEl) return { close() {}, destroy() {} };
+
+    let acTrigger = null;
+    let acItems = [];
+    let acIndex = -1;
+    let searchToken = 0;
+    let debounceTimer = null;
+    let onEditorChange = null;
+    let onDocMousedown = null;
+    let onDocTouchstart = null;
+    let onDocClick = null;
+    let acJustClosed = false;
+
+    // Per-instance caches (blocks by note title)
+    const blockCacheByTitle = new Map();
+    let cachedBlockNoteId = null;
+    let cachedBlocksList = null;
+    let resolvedBlockTitle = null;
+
+    function escapeHtmlLocal(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    // ─── Trigger detection ────────────────────────────────────────
+    function currentTrigger() {
+      const pos = editor.getSelection().start;
+      const before = editor.getContent().slice(0, pos);
+
+      const m = before.match(
+        /(!\[\[|!@\[\[|@\[\[|\[\[)([^\]\n#]*)(?:#([^\]\n]*))?$|(!@|@)([^\s\]\n#][^\]\n#]*)(?:#([^\]\n]*))?$/
+      );
+      if (!m) return null;
+
+      const opener = m[1] || m[4];
+      const text = m[1] ? (m[2] || '') : (m[5] || '');
+      const blockQuery = m[1] ? m[3] : m[6];
+
+      // Bare @ / !@ must be preceded by whitespace, (, or start-of-string.
+      if (opener === '@' || opener === '!@') {
+        const hashPart = (blockQuery !== undefined) ? 1 + blockQuery.length : 0;
+        const spanLen = opener.length + text.length + hashPart;
+        const idx = before.length - spanLen;
+        if (idx > 0) {
+          const prev = before[idx - 1];
+          if (!/[\s(]/.test(prev)) return null;
+        }
+      }
+
+      const embed = opener.startsWith('!');
+      const wiki = opener.includes('[[') || opener === '@' || opener === '!@';
+
+      const hashPart = (blockQuery !== undefined) ? 1 + blockQuery.length : 0;
+      return {
+        start: pos - (opener.length + text.length + hashPart),
+        text,
+        blockQuery,
+        wiki,
+        embed,
+        opener,
+      };
+    }
+
+    // ─── Popup positioning ────────────────────────────────────────
+    function positionAutocomplete() {
+      const coords = editor.view.coordsAtPos(editor.getSelection().start);
+      if (!coords) return;
+      const popupH = popupEl.offsetHeight || 200;
+      const popupW = popupEl.offsetWidth || 240;
+      const vh = window.innerHeight;
+      const vw = window.innerWidth;
+
+      let top, left;
+      if (window.matchMedia('(max-width: 720px)').matches) {
+        top = coords.top - popupH - 8;
+        if (top < 8) top = coords.bottom + 8;
+      } else {
+        top = coords.bottom + 4;
+        if (top + popupH > vh - 12) top = Math.max(8, coords.top - popupH - 4);
+      }
+      left = coords.left;
+      if (left + popupW > vw - 8) left = Math.max(8, vw - popupW - 8);
+
+      popupEl.style.top = top + 'px';
+      popupEl.style.left = left + 'px';
+    }
+
+    function showPopup() { popupEl.classList.remove('hidden'); }
+    function hidePopup() {
+      popupEl.classList.add('hidden');
+      popupEl.innerHTML = '';
+    }
+
+    // ─── Block picker ─────────────────────────────────────────────
+    async function handleBlockPicker(trig, token) {
+      const noteTitle = trig.text.trim();
+
+      if (cachedBlockNoteId !== noteTitle) {
+        cachedBlockNoteId = noteTitle;
+        cachedBlocksList = null;
+        resolvedBlockTitle = null;
+
+        const cacheKey = noteTitle.toLowerCase();
+        let noteId = null;
+        let actualTitle = noteTitle;
+
+        const exact = acItems.find(n => (n.title || '').toLowerCase() === cacheKey);
+        if (exact) {
+          noteId = exact.id;
+          actualTitle = exact.title;
+        } else {
+          try {
+            const r = await fetch(`/api/notes?q=${encodeURIComponent(noteTitle)}&limit=1`);
+            if (token !== searchToken) return;
+            const notes = await r.json();
+            if (notes.length > 0) {
+              noteId = notes[0].id;
+              actualTitle = notes[0].title;
+            }
+          } catch (e) {}
+        }
+
+        if (actualTitle) resolvedBlockTitle = actualTitle;
+
+        if (blockCacheByTitle.has(cacheKey)) {
+          cachedBlocksList = blockCacheByTitle.get(cacheKey);
+        } else if (noteId) {
+          try {
+            const r = await fetch(`/api/note/${noteId}/blocks/search?q=`);
+            if (token !== searchToken) return;
+            cachedBlocksList = await r.json();
+            blockCacheByTitle.set(cacheKey, cachedBlocksList);
+          } catch (e) {
+            cachedBlocksList = [];
+          }
+        } else {
+          cachedBlocksList = [];
+        }
+      }
+
+      if (token !== searchToken) return;
+
+      if (cachedBlocksList === null) {
+        popupEl.innerHTML = '<div class="ac-item" style="color:var(--text-faint)">Loading blocks…</div>';
+        showPopup();
+        positionAutocomplete();
+        return;
+      }
+
+      const q = (trig.blockQuery || '').toLowerCase();
+      const filtered = cachedBlocksList.filter(b => b.text.toLowerCase().includes(q));
+
+      if (!filtered.length) {
+        popupEl.innerHTML = '<div class="ac-item" style="color:var(--text-faint)">No blocks found.</div>';
+      } else {
+        popupEl.innerHTML = filtered.map((b, i) =>
+          `<div class="ac-item ${i === 0 ? 'sel' : ''}" data-block-id="${b.id}" data-block-text="${escapeHtmlLocal(encodeURIComponent(b.text))}" data-kind="block">
+             <span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px;opacity:0.7">tag</span>
+             ${escapeHtmlLocal(b.text)}
+           </div>`
+        ).join('');
+      }
+      showPopup();
+      positionAutocomplete();
+
+      popupEl.querySelectorAll('.ac-item[data-kind="block"]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const blockId = el.dataset.blockId;
+          const displayTitle = resolvedBlockTitle || trig.text;
+          const token2 = trig.embed
+            ? `![[${displayTitle}#${blockId}]]`
+            : `@[[${displayTitle}#${blockId}]]`;
+          editor.replaceRange(trig.start, editor.getSelection().start, token2);
+          hidePopup();
+          cachedBlockNoteId = null;
+          cachedBlocksList = null;
+          resolvedBlockTitle = null;
+          if (onInsert) onInsert(token2, null);
+        };
+      });
+    }
+
+    // ─── Note picker ──────────────────────────────────────────────
+    async function handleNotePicker(trig, token) {
+      cachedBlockNoteId = null;
+      cachedBlocksList = null;
+      resolvedBlockTitle = null;
+
+      const isEmbed = trig.embed;
+      const [notesRes] = await Promise.all([
+        fetch(`/api/notes?q=${encodeURIComponent(trig.text)}`),
+      ]);
+
+      if (token !== searchToken) return;
+
+      acItems = await notesRes.json();
+
+      const inputVal = (trig.text || '').trim();
+      let createOffer = null;
+      if (inputVal) {
+        const exactNote = acItems.some(n => (n.title || '').toLowerCase() === inputVal.toLowerCase());
+        if (!exactNote) createOffer = inputVal;
+      }
+
+      if (!acItems.length && !createOffer) {
+        hidePopup();
+        return;
+      }
+
+      acIndex = 0;
+      let html = '';
+      if (createOffer) {
+        html += `<div class="ac-item ac-create" data-create="1">
+                   <span class="material-symbols-rounded" style="font-size:16px;vertical-align:-3px;margin-right:6px">add</span>
+                   Create "${escapeHtmlLocal(createOffer)}"
+                 </div>`;
+      }
+      html += acItems.map((n, i) => {
+        const idx = (createOffer ? 1 : 0) + i;
+        return `<div class="ac-item ${idx === 0 ? 'sel' : ''}" data-id="${n.id}" data-kind="note">${escapeHtmlLocal(n.title)}</div>`;
+      }).join('');
+
+      popupEl.innerHTML = html;
+      showPopup();
+      positionAutocomplete();
+
+      popupEl.querySelectorAll('.ac-item').forEach(el => {
+        el.onclick = async (e) => {
+          e.preventDefault();
+          if (el.dataset.create) {
+            try {
+              const cr = await fetch('/note/create-by-title', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: inputVal }),
+              });
+              const cd = await cr.json();
+              if (cd.ok && cd.id) {
+                const tok = trig.embed
+                  ? `![[${cd.title}]]`
+                  : (trig.wiki ? `[[${cd.title}]]` : `@[[${cd.title}]]`);
+                editor.replaceRange(trig.start, editor.getSelection().start, tok);
+                hidePopup();
+                if (onInsert) onInsert(tok, cd.id);
+              }
+            } catch (err) { console.error('Create failed', err); }
+            return;
+          }
+
+          const noteId = Number(el.dataset.id);
+          const note = acItems.find(n => n.id === noteId);
+          if (!note) return;
+          const tok = trig.embed
+            ? `![[${note.title}]]`
+            : (trig.wiki ? `[[${note.title}]]` : `@[[${note.title}]]`);
+          editor.replaceRange(trig.start, editor.getSelection().start, tok);
+          hidePopup();
+          if (onInsert) onInsert(tok, note.id);
+        };
+      });
+    }
+
+    // ─── Change handler ───────────────────────────────────────────
+    async function checkAutocomplete() {
+      const token = ++searchToken;
+      const trig = currentTrigger();
+      if (!trig) {
+        hidePopup();
+        cachedBlockNoteId = null;
+        cachedBlocksList = null;
+        resolvedBlockTitle = null;
+        return;
+      }
+      if (!trig.text && trig.blockQuery === undefined) {
+        hidePopup();
+        return;
+      }
+      acTrigger = trig;
+
+      if (trig.blockQuery !== undefined) {
+        await handleBlockPicker(trig, token);
+      } else {
+        await handleNotePicker(trig, token);
+      }
+    }
+
+    function onEditorChangeHandler() {
+      const content = editor.getContent();
+      const sel = editor.getSelection();
+      const textBefore = content.slice(0, sel.start);
+      const isTypingBlock = /(?:\[\[|@)[^\]#]+#[^\]\n]*$/.test(textBefore);
+      const justOpened = /\[\[$|@$/.test(textBefore);
+
+      popupEl.innerHTML = '';
+      popupEl.classList.add('hidden');
+
+      clearTimeout(debounceTimer);
+      if (isTypingBlock || justOpened) {
+        checkAutocomplete();
+      } else {
+        debounceTimer = setTimeout(checkAutocomplete, 50);
+      }
+    }
+
+    // ─── Keyboard handling ────────────────────────────────────────
+    function onKeydown(e) {
+      if (popupEl.classList.contains('hidden')) return;
+      if (e.key === 'Escape') {
+        hidePopup();
+        e.preventDefault();
+        return;
+      }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        const items = [...popupEl.querySelectorAll('.ac-item')];
+        if (!items.length) return;
+        let cur = items.findIndex(el => el.classList.contains('sel'));
+        if (cur === -1) cur = 0;
+        cur += (e.key === 'ArrowDown' ? 1 : -1);
+        if (cur < 0) cur = 0;
+        if (cur >= items.length) cur = items.length - 1;
+        items.forEach((el, i) => el.classList.toggle('sel', i === cur));
+        e.preventDefault();
+        return;
+      }
+      if (e.key === 'Enter') {
+        const sel = popupEl.querySelector('.ac-item.sel');
+        if (sel) {
+          sel.click();
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+      }
+    }
+
+    // ─── Wire up ──────────────────────────────────────────────────
+    // CodeMirror's update listener — via the contentDOM `input` event.
+    const contentDom = editor.view.contentDOM;
+    contentDom.addEventListener('input', onEditorChangeHandler);
+    contentDom.addEventListener('keyup', onEditorChangeHandler);
+    contentDom.addEventListener('compositionend', onEditorChangeHandler);
+    contentDom.addEventListener('keydown', onKeydown);
+
+    // Dismiss popup on outside tap
+    onDocMousedown = (e) => {
+      if (!popupEl.classList.contains('hidden') && !popupEl.contains(e.target) && e.target !== contentDom) {
+        acJustClosed = true;
+        hidePopup();
+      }
+    };
+    onDocTouchstart = (e) => {
+      if (!popupEl.classList.contains('hidden') && !popupEl.contains(e.target) && e.target !== contentDom) {
+        acJustClosed = true;
+        hidePopup();
+      }
+    };
+    onDocClick = (e) => {
+      if (acJustClosed) {
+        acJustClosed = false;
+      }
+    };
+    document.addEventListener('mousedown', onDocMousedown, true);
+    document.addEventListener('touchstart', onDocTouchstart, true);
+    document.addEventListener('click', onDocClick, true);
+
+    return {
+      close() { hidePopup(); },
+      destroy() {
+        contentDom.removeEventListener('input', onEditorChangeHandler);
+        contentDom.removeEventListener('keydown', onKeydown);
+        document.removeEventListener('mousedown', onDocMousedown, true);
+        document.removeEventListener('touchstart', onDocTouchstart, true);
+        document.removeEventListener('click', onDocClick, true);
+        hidePopup();
+      },
+    };
+  }
+})(); // End of main Part 2 block
+  

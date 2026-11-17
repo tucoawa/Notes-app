@@ -307,4 +307,4 @@ export function createEditor(parent, initialDoc, onChange, onFocus) {
       view.focus();
     },
   };
-  }
+}
