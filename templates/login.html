@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="color-scheme" content="dark">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Login</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ config.ASSET_VERSION }}">
+</head>
+<body class="login-body">
+  <form class="login-card" method="post">
+    <h1>Notes</h1>
+    {% if error %}
+      <p class="login-error">{{ error }}</p>
+    {% endif %}
+    <label>
+      Username
+      <input type="text" name="username" autocomplete="username"
+             autocapitalize="none" autocorrect="off" spellcheck="false" required autofocus>
+    </label>
+    <label>
+      Password
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit" class="btn">Sign in</button>
+  </form>
+</body>
+</html>
